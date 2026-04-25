@@ -25,18 +25,52 @@ def _stable_body_hash(request: IngestRequest) -> str:
     encoded = json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
-
 def _extract_article_number(text: str) -> str | None:
-    match = re.search(r"(?i)\b(?:articolul|art\.?)\s+([0-9]+(?:\^[0-9]+)?|[IVXLCDM]+)", text)
+    match = re.search(
+        r"(?im)^\s*(?:Articolul|Art\.?)\s+([0-9]+(?:\^[0-9]+)?|[IVXLCDM]+)\s*[\.\-–]?",
+        text,
+    )
     return match.group(1) if match else None
 
 
 def _chunk_text_by_articles(text: str) -> list[str]:
-    # Simple MVP chunking. More precise legal chunking will be added later.
-    parts = re.split(r"(?=\bArticolul\s+[0-9IVXLCDM]+|\bArt\.\s+[0-9IVXLCDM]+)", text)
-    chunks = [p.strip() for p in parts if p.strip()]
-    return chunks or [text.strip()]
+    """
+    Split Romanian legal text into article-level chunks.
 
+    Handles examples:
+    - Articolul 15.
+    - Art. 15
+    - Articolul 15^1.
+    - Art. II.
+    """
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    article_pattern = re.compile(
+        r"(?im)^\s*(?:Articolul|Art\.?)\s+([0-9]+(?:\^[0-9]+)?|[IVXLCDM]+)\s*[\.\-–]?"
+    )
+
+    matches = list(article_pattern.finditer(normalized))
+
+    if not matches:
+        return [normalized] if normalized else []
+
+    chunks: list[str] = []
+
+    # Keep any preamble/title before the first article as part of first article.
+    preamble = normalized[: matches[0].start()].strip()
+
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
+        chunk = normalized[start:end].strip()
+
+        if index == 0 and preamble:
+            chunk = f"{preamble}\n\n{chunk}"
+
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks
 
 def create_ingest_job(
     tenant_id: str,

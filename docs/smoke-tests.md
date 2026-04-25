@@ -24,9 +24,10 @@ curl -sS -X POST http://localhost:8080/v1/ingest \
     "metadata": {
       "source_title": "Legea 31/1990 privind societățile comerciale",
       "text": "Articolul 15. Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate."
-    }
+      } 
   }'
 ```
+
 
 ## Query
 

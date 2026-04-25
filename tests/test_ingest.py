@@ -100,3 +100,55 @@ def test_unsupported_mime_type_returns_415(client, auth_headers):
 
     assert response.status_code == 415
     assert response.json()["error"]["code"] == "unsupported_media_type"
+
+def test_ingest_splits_multiple_articles_and_retrieves_article_16(client, auth_headers):
+    ingest_headers = {
+        **auth_headers,
+        "Idempotency-Key": "61616161-6161-4616-8616-616161616161",
+    }
+
+    ingest_response = client.post(
+        "/v1/ingest",
+        headers=ingest_headers,
+        json={
+            "namespace_id": "multi_article_test",
+            "source_id": "s_multi_article_test",
+            "source_type": "url",
+            "url": "https://example.com/multi-article",
+            "mime_type_hint": "text/plain",
+            "metadata": {
+                "source_title": "Legea 31/1990 privind societățile comerciale",
+                "text": (
+                    "Legea 31/1990 privind societățile comerciale\n\n"
+                    "Articolul 15.\n"
+                    "Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate.\n\n"
+                    "Articolul 16.\n"
+                    "Aporturile în natură trebuie să fie evaluabile din punct de vedere economic."
+                ),
+            },
+        },
+    )
+
+    assert ingest_response.status_code == 202
+
+    query_response = client.post(
+        "/v1/query",
+        headers=auth_headers,
+        json={
+            "question": "Ce spune articolul 16?",
+            "language": "ro",
+            "namespaces": ["multi_article_test"],
+            "top_k": 5,
+            "hint_article_number": "16",
+            "include_answer": True,
+        },
+    )
+
+    assert query_response.status_code == 200
+
+    data = query_response.json()
+
+    assert data["answer"] is not None
+    assert data["citations"][0]["chunk"]["article_number"] == "16"
+    assert "Aporturile în natură" in data["citations"][0]["chunk"]["content"]
+    assert "Aporturile în numerar" not in data["citations"][0]["chunk"]["content"]
