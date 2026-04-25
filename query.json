@@ -1,0 +1,9 @@
+{
+  "question": "Ce spune articolul 15 din Legea 31/1990?",
+  "language": "ro",
+  "namespaces": ["legea_31_1990"],
+  "top_k": 5,
+  "hint_article_number": "15",
+  "rerank": true,
+  "include_answer": true
+}

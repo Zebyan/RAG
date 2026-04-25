@@ -1,0 +1,21 @@
+services:
+  rag-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    expose:
+      - "8080"
+    volumes:
+      - rag_data:/app/data
+    networks:
+      - lex-advisor
+    restart: unless-stopped
+
+volumes:
+  rag_data:
+
+networks:
+  lex-advisor:
+    external: true

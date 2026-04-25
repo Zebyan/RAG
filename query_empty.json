@@ -1,0 +1,7 @@
+{
+  "question": "Care este programul primăriei Bălta Doamnei?",
+  "language": "ro",
+  "namespaces": ["legea_31_1990"],
+  "top_k": 5,
+  "include_answer": true
+}

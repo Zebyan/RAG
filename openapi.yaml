@@ -1,0 +1,6 @@
+openapi: 3.0.3
+info:
+  title: Lex-Advisor RAG Service MVP
+  version: 0.1.0
+  description: Local MVP scaffold. Replace with the official rag-api-spec.yaml before delivery.
+paths: {}
