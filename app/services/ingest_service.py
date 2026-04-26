@@ -15,6 +15,7 @@ from app.services.legal_chunker import chunk_legal_text
 from app.services.embedding_service import embed_texts
 from app.services import vector_store
 from app.services.url_fetcher import UrlFetchError, fetch_url_document
+from app.services.document_extractor import DocumentExtractionError, extract_document_text
 
 ALLOWED_MIME_TYPES = {"text/html", "application/pdf", "text/plain", "text/markdown"}
 
@@ -35,13 +36,19 @@ def _extract_article_number(text: str) -> str | None:
     )
     return match.group(1) if match else None
 
-def _resolve_ingest_text_and_metadata(request: IngestRequest) -> tuple[str, dict]:
+def _resolve_ingest_text_and_metadata(
+    request: IngestRequest,
+    file_content: bytes | None = None,
+    file_mime_type: str | None = None,
+    filename: str | None = None,
+) -> tuple[str, dict]:
     """
     Resolve ingest text.
 
     Priority:
     1. metadata.text local fixture override
-    2. source_type=url fetch + extract
+    2. source_type=file uploaded file extraction
+    3. source_type=url fetch + extract
     """
     metadata = dict(request.metadata or {})
 
@@ -49,6 +56,22 @@ def _resolve_ingest_text_and_metadata(request: IngestRequest) -> tuple[str, dict
     if isinstance(metadata_text, str) and metadata_text.strip():
         metadata["text_source"] = "metadata.text"
         return metadata_text, metadata
+
+    if request.source_type == "file":
+        if file_content is None:
+            raise ValueError("Uploaded file is required when source_type is file.")
+
+        extracted = extract_document_text(
+            content=file_content,
+            mime_type=file_mime_type or request.mime_type_hint,
+        )
+
+        metadata.update(extracted.metadata)
+        metadata["text_source"] = "uploaded_file"
+        metadata["uploaded_filename"] = filename
+        metadata["effective_mime_type"] = extracted.mime_type
+
+        return extracted.text, metadata
 
     if request.source_type == "url":
         if not request.url:
@@ -133,9 +156,12 @@ def _chunk_text_by_articles(text: str) -> list[str]:
 
 def create_ingest_job(
     tenant_id: str,
-    request_id: str,
     request: IngestRequest,
     idempotency_key: str,
+    file_content: bytes | None = None,
+    file_mime_type: str | None = None,
+    filename: str | None = None,
+    request_id: str | None = None,
 ) -> IngestAcceptedResponse:
     if request.source_type == "url" and not request.url:
         raise_error(422, "validation_error", "url is required when source_type='url'.", request_id=request_id)
@@ -185,7 +211,14 @@ def create_ingest_job(
     store.set_idem_record(tenant_id, idempotency_key, job_id, body_hash)
 
     # MVP: process synchronously using metadata.text if provided.
-    _process_ingest_synchronously(tenant_id, request, job)
+    _process_ingest_synchronously(
+        tenant_id=tenant_id,
+        request=request,
+        job=job,
+        file_content=file_content,
+        file_mime_type=file_mime_type,
+        filename=filename,
+    )
 
     return IngestAcceptedResponse(
         job_id=job_id,
@@ -194,11 +227,30 @@ def create_ingest_job(
         estimated_completion_at=estimated_completion_at,
     )
 
+def get_ingest_job_status(
+    tenant_id: str,
+    job_id: str,
+    request_id: str | None = None,
+) -> IngestJobStatus:
+    job = store.get_job(tenant_id, job_id)
+
+    if not job:
+        raise_error(
+            404,
+            "NOT_FOUND",
+            f"Ingest job not found: {job_id}",
+            request_id=request_id,
+        )
+
+    return IngestJobStatus(**job)
 
 def _process_ingest_synchronously(
     tenant_id: str,
     request: IngestRequest,
     job: dict[str, Any],
+    file_content: bytes | None = None,
+    file_mime_type: str | None = None,
+    filename: str | None = None,
 ) -> None:
     try:
         job["progress"] = {
@@ -208,7 +260,12 @@ def _process_ingest_synchronously(
         }
         store.set_job(tenant_id, job["job_id"], job)
 
-        text, resolved_metadata = _resolve_ingest_text_and_metadata(request)
+        text, resolved_metadata = _resolve_ingest_text_and_metadata(
+            request=request,
+            file_content=file_content,
+            file_mime_type=file_mime_type,
+            filename=filename,
+        )
 
         if not text.strip():
             raise ValueError("Extracted document text is empty.")
@@ -310,7 +367,7 @@ def _process_ingest_synchronously(
             },
         )
 
-    except (ValueError, UrlFetchError) as exc:
+    except (ValueError, UrlFetchError, DocumentExtractionError) as exc:
         completed_at = utc_now()
 
         job.update(

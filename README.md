@@ -1,216 +1,81 @@
 # CityDock / Lex-Advisor RAG Service
 
-FastAPI-based implementation of a Romanian legal-domain RAG service aligned with the main CityDock `/v1` API contract surface.
+FastAPI-based implementation of a Romanian legal-domain RAG service aligned with the CityDock `/v1` RAG API contract.
 
-The project currently provides a local implementation with:
+The service implements local RAG behavior with:
 
 - authenticated `/v1` endpoints;
 - tenant isolation;
 - idempotent ingest;
-- persistent SQLite storage;
+- URL and multipart file ingest;
+- document extraction;
 - article-aware legal chunking;
-- Qdrant vector database support;
-- local embeddings with `sentence-transformers`;
+- SQLite persistence;
+- Qdrant vector database;
+- local `sentence-transformers` embeddings;
 - hybrid retrieval;
 - citation-grounded deterministic answers;
 - no-hallucination fallback behavior;
-- namespace lifecycle operations;
-- endpoint smoke tests;
-- automated test coverage.
-
-Current test status:
-
-```text
-39 passed
-```
+- Docker and Docker Compose support;
+- automated tests and endpoint smoke tests.
 
 ---
 
-## 1. Current Implementation Status
+## Current status
 
-Implemented and tested locally:
+Implemented and verified locally:
 
 - FastAPI service.
-- `/v1` API surface.
-- Pydantic request/response models.
+- `/v1` API endpoint surface.
 - Bearer API-key validation.
 - `X-Request-ID` validation.
 - `X-Tenant-ID` tenant scoping.
-- Tenant-scoped `Idempotency-Key` handling for `POST /v1/ingest`.
-- Tenant + namespace isolation.
+- Tenant-scoped idempotency through `Idempotency-Key`.
 - Persistent SQLite storage.
-- Ingest flow with job status.
-- Synchronous MVP ingest processing.
-- Article-aware legal chunking.
-- Section/chapter metadata extraction.
-- Paragraph and point metadata extraction.
-- Long article splitting.
-- Qdrant vector database through Docker.
+- URL ingest.
+- Multipart file upload ingest.
+- Document extraction for:
+  - `text/plain`;
+  - `text/markdown`;
+  - `text/html`;
+  - `application/pdf`.
+- Romanian legal article-aware chunking.
+- Qdrant vector database.
 - Local embeddings with `sentence-transformers`.
-- Vector indexing during ingest.
-- Vector search during query.
 - Hybrid retrieval:
-  - exact article-number boost;
-  - Qdrant vector search;
-  - lexical keyword scoring;
+  - exact article match;
+  - vector search;
+  - lexical scoring;
   - phrase matching;
-  - diacritic-normalized scoring;
-  - rough Romanian word-form matching;
+  - Romanian/diacritic normalization;
   - namespace diversity.
 - Citation-based deterministic answers.
-- Empty-result anti-hallucination contract.
+- No-answer fallback.
 - Namespace stats.
 - Source deletion.
 - Namespace deletion.
-- Qdrant vector cleanup on source/namespace deletion.
-- Cross-tenant isolation tests.
-- Multi-namespace retrieval tests.
-- Vector-store integration tests.
-- Hybrid query tests.
-- `/v1/openapi.json`.
-- Local fixtures.
-- Python endpoint smoke test.
-- Automated test suite passing.
+- Standard validation error envelope.
+- Standard response headers.
+- Dockerfile.
+- `docker-compose.local.yml`.
+- `docker-compose.service.yml`.
+- Local tests and smoke tests.
+
+Not active yet:
+
+- external LLM answer generation;
+- Prometheus `/metrics`;
+- OpenTelemetry;
+- official CityDock CI/deployment.
+
+The default answer generation is deterministic and citation-based. No external LLM is called by default.
 
 ---
 
-## 2. Current Limitations
-
-Not implemented yet:
-
-- External LLM answer generation.
-- Real URL fetching.
-- HTML extraction.
-- PDF extraction.
-- Multipart file upload.
-- Prometheus `/metrics`.
-- OpenTelemetry.
-- Standardized wrapping for FastAPI `422` validation errors.
-- Full response header contract:
-  - `X-Request-ID`;
-  - `X-Vendor-Trace-ID`;
-  - `X-Vendor-Retrieval-Strategy`;
-  - `Server-Timing`.
-- Fully aligned `openapi.yaml`.
-- Verified production Docker image build.
-- Verified full local Docker Compose stack.
-- Bitbucket CI.
-- Trivy scan.
-- Production deployment.
-
-Current answer generation is deterministic and citation-based. No external LLM is called by default.
-
-Current retrieval strategy:
+## Repository structure
 
 ```text
-tenant + namespace filter
-→ exact article-number matching
-→ Qdrant vector search
-→ lexical keyword matching
-→ phrase matching
-→ diacritic-normalized scoring
-→ rough Romanian word-form matching
-→ namespace diversity
-→ citation-based deterministic answer
-```
-
-Planned optional LLM generation:
-
-```text
-tenant + namespace filter
-→ exact article candidates
-→ vector candidates
-→ lexical candidates
-→ merge + rerank
-→ prompt LLM with retrieved chunks only
-→ validate/attach citations
-→ return grounded answer
-```
-
----
-
-## 3. Architecture
-
-```text
-Client
-  |
-  | HTTP /v1 request
-  v
-FastAPI routes
-  |
-  +--> auth.py
-  |      - Authorization validation
-  |      - X-Request-ID validation
-  |      - X-Tenant-ID scoping
-  |
-  +--> models.py
-  |      - Pydantic request/response models
-  |
-  +--> services/
-         |
-         +--> ingest_service.py
-         |      - validates ingest request
-         |      - enforces idempotency
-         |      - chunks legal text
-         |      - stores jobs/sources/chunks in SQLite
-         |      - generates embeddings
-         |      - indexes vectors into Qdrant
-         |
-         +--> legal_chunker.py
-         |      - article-aware chunking
-         |      - section/chapter metadata
-         |      - paragraph and point metadata
-         |      - long article splitting
-         |
-         +--> embedding_service.py
-         |      - loads sentence-transformers model
-         |      - converts text into 384-dimensional vectors
-         |
-         +--> vector_store.py
-         |      - creates Qdrant collection
-         |      - upserts chunk vectors
-         |      - searches vectors with tenant + namespace filters
-         |      - deletes vectors by source/namespace
-         |
-         +--> retrieval_service.py
-         |      - combines SQLite lexical candidates
-         |      - combines Qdrant vector candidates
-         |      - boosts exact article matches
-         |      - reranks hybrid results
-         |
-         +--> answer_service.py
-         |      - builds deterministic Romanian answer
-         |      - attaches [1], [2] citations
-         |      - returns null answer on empty result
-         |
-         +--> namespace_service.py
-         |      - namespace stats
-         |      - source deletion
-         |      - namespace deletion
-         |
-         +--> sqlite_store.py
-                - persistent jobs
-                - idempotency records
-                - source registry
-                - chunk metadata
-                - namespace stats
-
-External local services:
-  |
-  +--> SQLite
-  |      - ./data/app.db
-  |
-  +--> Qdrant Docker container
-         - http://localhost:6333
-         - collection: rag_chunks
-```
-
----
-
-## 4. Project Structure
-
-```text
-citydock-rag-mvp/
+citydock-rag-service/
 ├── app/
 │   ├── main.py
 │   ├── config.py
@@ -225,6 +90,7 @@ citydock-rag-mvp/
 │   │   └── namespaces.py
 │   └── services/
 │       ├── answer_service.py
+│       ├── document_extractor.py
 │       ├── embedding_service.py
 │       ├── ingest_service.py
 │       ├── legal_chunker.py
@@ -232,212 +98,192 @@ citydock-rag-mvp/
 │       ├── retrieval_service.py
 │       ├── sqlite_store.py
 │       ├── store.py
+│       ├── url_fetcher.py
 │       └── vector_store.py
-├── fixtures/
-├── tests/
-├── docs/
-├── scripts/
 ├── data/
-├── requirements.txt
+│   └── .gitkeep
+├── docs/
+├── examples/
+├── fixtures/
+├── scripts/
+├── tests/
+├── .env.example
+├── .gitignore
+├── DELIVERY_NOTES.md
 ├── Dockerfile
+├── README.md
 ├── docker-compose.local.yml
 ├── docker-compose.service.yml
 ├── openapi.yaml
-├── .env.example
-├── DELIVERY_NOTES.md
 ├── pytest.ini
-├── smoke_endpoints.py
-└── README.md
+├── requirements.txt
+├── requirements-dev.txt
+└── smoke_endpoints.py
 ```
 
 ---
 
-## 5. Core Workflows
-
-### 5.1 Health
+## Architecture
 
 ```text
-GET /v1/health
-→ returns service status, version, uptime, dependencies
-```
+Client
+  |
+  | HTTP /v1
+  v
+FastAPI routes
+  |
+  +--> auth.py
+  |      - Authorization validation
+  |      - X-Request-ID validation
+  |      - X-Tenant-ID scoping
+  |
+  +--> routes/ingest.py
+  |      - JSON ingest
+  |      - multipart ingest
+  |      - ingest job polling
+  |
+  +--> routes/query.py
+  |      - hybrid retrieval
+  |      - citation response
+  |
+  +--> services/
+         |
+         +--> ingest_service.py
+         |      - idempotency
+         |      - URL/file text resolution
+         |      - chunking
+         |      - embedding
+         |      - indexing
+         |
+         +--> url_fetcher.py
+         |      - HTTP URL fetching
+         |      - MIME handling
+         |      - extraction handoff
+         |
+         +--> document_extractor.py
+         |      - text/plain extraction
+         |      - text/markdown extraction
+         |      - text/html visible text extraction
+         |      - application/pdf extraction
+         |
+         +--> legal_chunker.py
+         |      - Romanian legal article chunking
+         |      - section/chapter metadata
+         |      - paragraph/point metadata
+         |
+         +--> embedding_service.py
+         |      - sentence-transformers model loading
+         |      - text to 384-dimensional vectors
+         |
+         +--> vector_store.py
+         |      - Qdrant collection management
+         |      - vector upsert
+         |      - vector search
+         |      - vector deletion
+         |
+         +--> retrieval_service.py
+         |      - exact article boost
+         |      - vector retrieval
+         |      - lexical retrieval
+         |      - reranking
+         |
+         +--> answer_service.py
+         |      - deterministic grounded answer
+         |      - citation markers
+         |      - no-answer behavior
+         |
+         +--> sqlite_store.py
+                - jobs
+                - idempotency records
+                - sources
+                - chunks
+                - namespace stats
 
-No authentication required.
-
----
-
-### 5.2 Ingest
-
-```text
-POST /v1/ingest
-→ validate headers
-→ validate Idempotency-Key
-→ check idempotency body hash
-→ create ingest job
-→ read source text
-→ chunk legal text by article/section/paragraph
-→ store chunks in SQLite
-→ generate embeddings with sentence-transformers
-→ upsert vectors and payloads into Qdrant
-→ update namespace stats
-→ mark job as done
-→ return 202 accepted response
-```
-
-Current ingest is synchronous internally, but exposed through a job-status API.
-
----
-
-### 5.3 Query
-
-```text
-POST /v1/query
-→ validate headers
-→ embed user question
-→ retrieve vector candidates from Qdrant
-→ retrieve lexical/article candidates from SQLite
-→ merge candidates
-→ rerank hybrid results
-→ apply no-answer threshold
-→ build citations
-→ build deterministic answer
-→ return QueryResponse
-```
-
-If no relevant chunks are found:
-
-```json
-{
-  "answer": null,
-  "citations": [],
-  "confidence": 0.0
-}
-```
-
----
-
-### 5.4 Namespace Stats
-
-```text
-GET /v1/namespaces/{namespace_id}/stats
-→ verify namespace exists for tenant
-→ return chunk/source/token stats
-```
-
----
-
-### 5.5 Delete Source
-
-```text
-DELETE /v1/namespaces/{namespace_id}/sources/{source_id}
-→ delete source chunks from SQLite
-→ delete source vectors from Qdrant
-→ return 204
-```
-
----
-
-### 5.6 Delete Namespace
-
-```text
-DELETE /v1/namespaces/{namespace_id}
-→ delete all namespace data from SQLite
-→ delete all namespace vectors from Qdrant
-→ return deletion job response
+Local infrastructure:
+  |
+  +--> SQLite
+  |      - ./data/app.db
+  |
+  +--> Qdrant
+         - http://localhost:6333
+         - collection: rag_chunks
 ```
 
 ---
 
-## 6. Requirements
+## Requirements
 
-Recommended Python version:
+Recommended:
 
 ```text
 Python 3.12.x
+Docker Desktop
+PowerShell or compatible shell
 ```
 
-Required local tools:
+Runtime dependencies are in:
 
 ```text
-Python 3.12
-Docker Desktop
-PowerShell or terminal
+requirements.txt
 ```
 
-Install Python dependencies:
+Development/test dependencies are in:
+
+```text
+requirements-dev.txt
+```
+
+---
+
+## Clone and run locally
+
+### 1. Clone repository
 
 ```powershell
-pip install -r requirements.txt
+git clone <repo-url>
+cd <repo-folder>
 ```
 
-Qdrant runs through Docker and is required for vector tests and hybrid retrieval.
-
----
-
-## 7. Environment Variables
-
-Example `.env`:
-
-```env
-APP_NAME=citydock-rag-mvp
-APP_VERSION=0.1.0
-RAG_API_KEY=test-api-key
-
-DATABASE_PATH=./data/app.db
-
-VECTOR_STORE=qdrant
-QDRANT_URL=http://localhost:6333
-QDRANT_COLLECTION=rag_chunks
-
-EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
-EMBEDDING_DIM=384
-
-LLM_PROVIDER=none
-```
-
-| Variable | Description | Default |
-|---|---|---|
-| `APP_NAME` | Service name | `citydock-rag-mvp` |
-| `APP_VERSION` | Service version | `0.1.0` |
-| `RAG_API_KEY` | Bearer token used by local auth | `test-api-key` |
-| `DATABASE_PATH` | SQLite database path | `./data/app.db` |
-| `VECTOR_STORE` | Vector backend selector | `qdrant` |
-| `QDRANT_URL` | Qdrant HTTP URL | `http://localhost:6333` |
-| `QDRANT_COLLECTION` | Qdrant collection name | `rag_chunks` |
-| `EMBEDDING_MODEL` | Sentence-transformers model | `paraphrase-multilingual-MiniLM-L12-v2` |
-| `EMBEDDING_DIM` | Embedding dimension | `384` |
-| `LLM_PROVIDER` | LLM provider selector | `none` |
-
----
-
-## 8. Run Locally
-
-### 8.1 Create virtual environment
+### 2. Create virtual environment
 
 ```powershell
 python -m venv .venv
-```
-
-Activate:
-
-```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-Install dependencies:
+On Linux/macOS:
 
-```powershell
-pip install -r requirements.txt
+```bash
+python -m venv .venv
+source .venv/bin/activate
 ```
 
-Create `.env`:
+### 3. Install dependencies
+
+```powershell
+pip install -r requirements-dev.txt
+```
+
+### 4. Create local environment file
 
 ```powershell
 copy .env.example .env
 ```
 
----
+For local Python execution, make sure `.env` contains:
 
-### 8.2 Start Qdrant
+```env
+RAG_API_KEY=test-api-key
+DATABASE_PATH=./data/app.db
+VECTOR_STORE=qdrant
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION=rag_chunks
+EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_DIM=384
+LLM_PROVIDER=none
+```
+
+### 5. Start Qdrant
 
 ```powershell
 docker compose -f docker-compose.local.yml up qdrant
@@ -449,7 +295,7 @@ Verify Qdrant:
 curl.exe http://localhost:6333/collections
 ```
 
-Expected:
+Expected response:
 
 ```json
 {
@@ -461,15 +307,14 @@ Expected:
 }
 ```
 
-If the `rag_chunks` collection already exists, it may appear in the collections list.
+If `rag_chunks` already exists, it can appear in the collections list.
 
----
-
-### 8.3 Start API server
+### 6. Start the API
 
 In another terminal:
 
 ```powershell
+.venv\Scripts\Activate.ps1
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
@@ -479,13 +324,13 @@ Health check:
 curl.exe http://localhost:8080/v1/health
 ```
 
-Expected:
+Expected response:
 
 ```json
 {
   "status": "ok",
   "version": "0.1.0",
-  "uptime_seconds": 123,
+  "uptime_seconds": 12,
   "dependencies": {
     "vector_store": "ok",
     "llm": "ok",
@@ -496,9 +341,39 @@ Expected:
 
 ---
 
-## 9. Run Tests
+## Run with Docker Compose
 
-Make sure Qdrant is running:
+For Docker Compose, the API container must use:
+
+```env
+QDRANT_URL=http://qdrant:6333
+DATABASE_PATH=/app/data/app.db
+```
+
+Run:
+
+```powershell
+docker compose -f docker-compose.local.yml up --build
+```
+
+Then test:
+
+```powershell
+curl.exe http://localhost:8080/v1/health
+python smoke_endpoints.py http://localhost:8080 test-api-key docker-compose-test-tenant
+```
+
+Expected final smoke test output:
+
+```text
+ALL ENDPOINT SMOKE TESTS PASSED
+```
+
+---
+
+## Run tests
+
+Make sure Qdrant is running locally:
 
 ```powershell
 curl.exe http://localhost:6333/collections
@@ -510,58 +385,43 @@ Then run:
 pytest
 ```
 
-Expected:
+Expected result:
 
 ```text
-39 passed
+all tests passed
 ```
 
-The test suite currently covers:
+The test suite covers:
 
-- health endpoint;
 - auth validation;
-- missing auth errors;
+- validation error envelopes;
+- response headers;
 - ingest;
-- idempotency same body;
-- idempotency conflict;
+- URL fetcher;
+- multipart file upload;
+- document extraction;
+- idempotency;
 - ingest polling;
-- unsupported MIME;
-- article-aware chunking;
-- legal metadata chunking;
-- long article splitting;
-- exact article retrieval;
-- retrieval without article hint;
-- diacritic normalization;
-- diacritics preserved in citation content;
-- no-hallucination wrong namespace;
+- legal chunking;
+- Qdrant vector store;
+- hybrid retrieval;
+- tenant isolation;
 - namespace stats;
 - source deletion;
 - namespace deletion;
-- SQLite persistence behavior;
-- embedding service;
-- Qdrant collection creation;
-- Qdrant vector upsert/search;
-- Qdrant tenant isolation;
-- Qdrant source deletion;
-- Qdrant namespace deletion;
-- ingest vector indexing;
-- Qdrant cleanup on delete;
-- hybrid query retrieval;
-- exact article priority under hybrid retrieval;
-- cross-tenant isolation under hybrid retrieval;
-- validation errors.
+- no-answer behavior.
 
 ---
 
-## 10. Endpoint Smoke Tests
+## Endpoint smoke test
 
-Run the Python smoke test while both Qdrant and the API server are running:
+With Qdrant and API running:
 
 ```powershell
 python smoke_endpoints.py
 ```
 
-Optional explicit parameters:
+Optional explicit arguments:
 
 ```powershell
 python smoke_endpoints.py http://localhost:8080 test-api-key endpoint-test-tenant
@@ -573,34 +433,62 @@ Expected final output:
 ALL ENDPOINT SMOKE TESTS PASSED
 ```
 
-The smoke test checks:
+---
+
+## API authentication headers
+
+Most `/v1` endpoints require:
 
 ```text
-/v1/health
-/v1/ingest
-/v1/ingest/{job_id}
-/v1/query article 15
-/v1/query article 16
-empty result / no hallucination
-namespace stats
-cross-tenant isolation
-delete source
-/v1/openapi.json
+Authorization: Bearer test-api-key
+X-Request-ID: <uuid>
+X-Tenant-ID: <tenant-id>
 ```
 
-After hybrid retrieval is enabled, query responses should show:
+Ingest also requires:
 
-```json
-"retrieval_strategy": "hybrid_qdrant_article_keyword"
+```text
+Idempotency-Key: <uuid>
+```
+
+Example headers:
+
+```powershell
+-H "Authorization: Bearer test-api-key"
+-H "X-Request-ID: 11111111-1111-4111-8111-111111111111"
+-H "X-Tenant-ID: ph-balta-doamnei"
 ```
 
 ---
 
-## 11. Manual API Examples
+## API examples with curl
 
-### 11.1 Ingest
+### 1. Health
 
-Create `ingest.json`:
+```powershell
+curl.exe http://localhost:8080/v1/health
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok",
+  "version": "0.1.0",
+  "uptime_seconds": 12,
+  "dependencies": {
+    "vector_store": "ok",
+    "llm": "ok",
+    "object_store": "ok"
+  }
+}
+```
+
+---
+
+### 2. JSON ingest with inline fixture text
+
+Create `examples/ingest.json`:
 
 ```json
 {
@@ -625,25 +513,59 @@ curl.exe -X POST http://localhost:8080/v1/ingest `
   -H "X-Request-ID: 22222222-2222-4222-8222-222222222222" `
   -H "X-Tenant-ID: ph-balta-doamnei" `
   -H "Idempotency-Key: 99999999-9999-4999-8999-999999999999" `
-  --data-binary "@ingest.json"
+  --data-binary "@examples/ingest.json"
 ```
 
-Expected:
+Expected response:
 
 ```json
 {
   "job_id": "j_...",
   "status": "queued",
-  "submitted_at": "...",
-  "estimated_completion_at": "..."
+  "submitted_at": "2026-04-26T18:00:00Z",
+  "estimated_completion_at": "2026-04-26T18:05:00Z"
+}
+```
+
+Although the response says `queued`, the MVP processes the job synchronously and the job status should become `done`.
+
+---
+
+### 3. Poll ingest job
+
+Replace `j_...` with the returned job id:
+
+```powershell
+curl.exe -X GET http://localhost:8080/v1/ingest/j_... `
+  -H "Authorization: Bearer test-api-key" `
+  -H "X-Request-ID: 33333333-3333-4333-8333-333333333333" `
+  -H "X-Tenant-ID: ph-balta-doamnei"
+```
+
+Expected response:
+
+```json
+{
+  "job_id": "j_...",
+  "namespace_id": "legea_31_1990",
+  "source_id": "s_47381",
+  "status": "done",
+  "progress": {
+    "stage": "indexing",
+    "percent": 100,
+    "chunks_created": 2
+  },
+  "submitted_at": "2026-04-26T18:00:00Z",
+  "completed_at": "2026-04-26T18:00:01Z",
+  "error": null
 }
 ```
 
 ---
 
-### 11.2 Query Article 15
+### 4. Query article 15
 
-Create `query.json`:
+Create `examples/query.json`:
 
 ```json
 {
@@ -665,33 +587,53 @@ curl.exe -X POST http://localhost:8080/v1/query `
   -H "Content-Type: application/json" `
   -H "X-Request-ID: 11111111-1111-4111-8111-111111111111" `
   -H "X-Tenant-ID: ph-balta-doamnei" `
-  --data-binary "@query.json"
+  --data-binary "@examples/query.json"
 ```
 
-Expected:
+Expected response shape:
 
 ```json
 {
-  "answer": "Articolul 15 prevede ... [1].",
+  "request_id": "11111111-1111-4111-8111-111111111111",
+  "answer": "Articolul 15 prevede următoarele: Articolul 15. Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate. [1].",
   "citations": [
     {
       "marker": "[1]",
       "chunk": {
+        "content": "Articolul 15. Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate.",
         "article_number": "15",
-        "namespace_id": "legea_31_1990"
+        "source_id": "s_47381",
+        "source_title": "Legea 31/1990 privind societățile comerciale",
+        "namespace_id": "legea_31_1990",
+        "score": 0.7
       }
     }
   ],
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "model_id": "mvp-local"
+  },
   "retrieval_strategy": "hybrid_qdrant_article_keyword",
   "confidence": 0.7
 }
 ```
 
+Expected response headers include:
+
+```text
+X-Request-ID: 11111111-1111-4111-8111-111111111111
+X-Vendor-Trace-ID: tr_...
+X-Vendor-Retrieval-Strategy: hybrid_qdrant_article_keyword
+Server-Timing: app;dur=...
+```
+
 ---
 
-### 11.3 Empty Result
+### 5. Query empty/no-answer behavior
 
-Create `query_empty.json`:
+Create `examples/query_empty.json`:
 
 ```json
 {
@@ -711,10 +653,188 @@ curl.exe -X POST http://localhost:8080/v1/query `
   -H "Content-Type: application/json" `
   -H "X-Request-ID: 55555555-5555-4555-8555-555555555555" `
   -H "X-Tenant-ID: ph-balta-doamnei" `
-  --data-binary "@query_empty.json"
+  --data-binary "@examples/query_empty.json"
+```
+
+Expected response:
+
+```json
+{
+  "answer": null,
+  "citations": [],
+  "confidence": 0.0
+}
+```
+
+The full response also includes `request_id`, `usage`, `latency_ms`, `model_version`, `retrieval_strategy`, and `trace_id`.
+
+---
+
+### 6. URL ingest
+
+Create `examples/ingest_url.json`:
+
+```json
+{
+  "namespace_id": "url_demo_namespace",
+  "source_id": "url_demo_source",
+  "source_type": "url",
+  "url": "https://example.com/legal.txt",
+  "mime_type_hint": "text/plain",
+  "metadata": {
+    "source_title": "Fetched Legal Text"
+  }
+}
+```
+
+Run:
+
+```powershell
+curl.exe -X POST http://localhost:8080/v1/ingest `
+  -H "Authorization: Bearer test-api-key" `
+  -H "Content-Type: application/json" `
+  -H "X-Request-ID: 66666666-6666-4666-8666-666666666666" `
+  -H "X-Tenant-ID: ph-balta-doamnei" `
+  -H "Idempotency-Key: 66666666-6666-4666-8666-666666666667" `
+  --data-binary "@examples/ingest_url.json"
+```
+
+Expected success response:
+
+```json
+{
+  "job_id": "j_...",
+  "status": "queued",
+  "submitted_at": "...",
+  "estimated_completion_at": "..."
+}
+```
+
+If the URL is unreachable, has unsupported MIME type, or contains no extractable text, the job is marked as `failed` when polled.
+
+---
+
+### 7. Multipart file ingest
+
+Create `examples/file_payload.json`:
+
+```json
+{
+  "namespace_id": "uploaded_legea_31",
+  "source_id": "uploaded_s_001",
+  "source_type": "file",
+  "mime_type_hint": "text/plain",
+  "metadata": {
+    "source_title": "Uploaded Legal Text"
+  }
+}
+```
+
+Create `examples/legea_31.txt`:
+
+```text
+Articolul 15.
+Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate.
+```
+
+Run:
+
+```powershell
+curl.exe -X POST http://localhost:8080/v1/ingest `
+  -H "Authorization: Bearer test-api-key" `
+  -H "X-Request-ID: 77777777-7777-4777-8777-777777777777" `
+  -H "X-Tenant-ID: ph-balta-doamnei" `
+  -H "Idempotency-Key: 77777777-7777-4777-8777-777777777778" `
+  -F "payload=<examples/file_payload.json;type=application/json" `
+  -F "file=@examples/legea_31.txt;type=text/plain"
+```
+
+Expected response:
+
+```json
+{
+  "job_id": "j_...",
+  "status": "queued",
+  "submitted_at": "...",
+  "estimated_completion_at": "..."
+}
+```
+
+Then query:
+
+```powershell
+curl.exe -X POST http://localhost:8080/v1/query `
+  -H "Authorization: Bearer test-api-key" `
+  -H "Content-Type: application/json" `
+  -H "X-Request-ID: 88888888-8888-4888-8888-888888888888" `
+  -H "X-Tenant-ID: ph-balta-doamnei" `
+  -d "{\"question\":\"Ce spune articolul 15?\",\"language\":\"ro\",\"namespaces\":[\"uploaded_legea_31\"],\"top_k\":5,\"hint_article_number\":\"15\",\"include_answer\":true}"
+```
+
+Expected response contains:
+
+```json
+{
+  "answer": "... [1].",
+  "citations": [
+    {
+      "chunk": {
+        "article_number": "15",
+        "source_title": "Uploaded Legal Text",
+        "metadata": {
+          "text_source": "uploaded_file",
+          "uploaded_filename": "legea_31.txt"
+        }
+      }
+    }
+  ]
+}
+```
+
+---
+
+### 8. Namespace stats
+
+```powershell
+curl.exe -X GET http://localhost:8080/v1/namespaces/legea_31_1990/stats `
+  -H "Authorization: Bearer test-api-key" `
+  -H "X-Request-ID: 99999999-9999-4999-8999-999999999999" `
+  -H "X-Tenant-ID: ph-balta-doamnei"
+```
+
+Expected response:
+
+```json
+{
+  "namespace_id": "legea_31_1990",
+  "chunk_count": 2,
+  "source_count": 1,
+  "total_tokens_indexed": 27,
+  "last_ingested_at": "...",
+  "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
+  "embedding_dim": 384
+}
+```
+
+---
+
+### 9. Delete source
+
+```powershell
+curl.exe -X DELETE http://localhost:8080/v1/namespaces/legea_31_1990/sources/s_47381 `
+  -H "Authorization: Bearer test-api-key" `
+  -H "X-Request-ID: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" `
+  -H "X-Tenant-ID: ph-balta-doamnei" `
+  -i
 ```
 
 Expected:
+
+```text
+HTTP/1.1 204 No Content
+```
+
+A later query should return:
 
 ```json
 {
@@ -726,79 +846,34 @@ Expected:
 
 ---
 
-## 12. Docker
-
-Docker files are present, but the final production-style Docker build still needs verification.
-
-Build:
+### 10. Delete namespace
 
 ```powershell
-docker build -t citydock-rag-mvp:0.1.0 .
+curl.exe -X DELETE http://localhost:8080/v1/namespaces/legea_31_1990 `
+  -H "Authorization: Bearer test-api-key" `
+  -H "X-Request-ID: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" `
+  -H "X-Tenant-ID: ph-balta-doamnei"
 ```
 
-Run:
-
-```powershell
-docker run --rm -p 8080:8080 --env-file .env citydock-rag-mvp:0.1.0
-```
-
-Health:
-
-```powershell
-curl.exe http://localhost:8080/v1/health
-```
-
-Notes:
-
-- The local API container must be able to reach Qdrant.
-- In Docker Compose, the app should use `QDRANT_URL=http://qdrant:6333`.
-- When running the app directly on the host, use `QDRANT_URL=http://localhost:6333`.
-
----
-
-## 13. Docker Compose
-
-### 13.1 Local Compose
-
-```powershell
-docker compose -f docker-compose.local.yml up --build
-```
-
-Then test:
-
-```powershell
-curl.exe http://localhost:8080/v1/health
-```
-
-Expected:
+Expected response shape:
 
 ```json
 {
-  "status": "ok"
+  "job_id": "j_...",
+  "status": "done",
+  "namespace_id": "legea_31_1990"
 }
 ```
 
 ---
 
-### 13.2 Service Compose
+## OpenAPI
 
-Validate the service compose file:
+The repository contains:
 
-```powershell
-docker compose -f docker-compose.service.yml config
+```text
+openapi.yaml
 ```
-
-The service compose file is intended for CityDock's external stack and should:
-
-- expose port `8080` only to the Docker network;
-- avoid host port binding;
-- use env vars for configuration;
-- join the external `lex-advisor` network;
-- use mounted volumes for persistence if required.
-
----
-
-## 14. OpenAPI
 
 The running service exposes:
 
@@ -806,179 +881,65 @@ The running service exposes:
 GET /v1/openapi.json
 ```
 
-The repo also contains:
+Generate a local runtime schema snapshot:
 
-```text
-openapi.yaml
+```powershell
+curl.exe http://localhost:8080/v1/openapi.json -o generated-openapi.local.json
 ```
 
-Current status:
-
-- `/v1/openapi.json` exposes the generated FastAPI schema.
-- `openapi.yaml` still needs final alignment with the official provided contract.
-- Strict byte-level contract reconciliation remains a handoff task before final delivery.
+This generated snapshot is a local artifact and should not normally be committed.
 
 ---
 
-## 15. Retrieval Design
+## Docker image size note
 
-The current retrieval is hybrid.
+The Docker image includes a local multilingual embedding runtime using `sentence-transformers` and CPU-only PyTorch.
 
-### 15.1 Exact Article Retrieval
+This keeps Romanian legal documents and user questions inside the deployed stack and avoids third-party embedding APIs, but increases image size beyond a minimal FastAPI-only image.
 
-If `hint_article_number` is provided, chunks with the same `article_number` receive the strongest boost.
-
-This protects legal accuracy for questions like:
-
-```text
-Ce spune articolul 15 din Legea 31/1990?
-```
-
-### 15.2 Vector Retrieval
-
-The user question is embedded with the same `sentence-transformers` model used for chunk embeddings.
-
-The query vector is searched in Qdrant with filters:
-
-```text
-tenant_id == X-Tenant-ID
-namespace_id in request.namespaces
-```
-
-This prevents cross-tenant leakage.
-
-### 15.3 Lexical Retrieval
-
-SQLite chunks are also scored with:
-
-- keyword overlap;
-- phrase matching;
-- diacritic normalization;
-- rough Romanian word-form matching.
-
-### 15.4 Reranking
-
-Candidates from Qdrant and SQLite are merged by `chunk_id`, deduplicated, and reranked.
-
-Legal article matches remain stronger than pure vector similarity.
+A production optimization path is to move embeddings to an internal embedding service or replace the embedding runtime with ONNX/FastEmbed after quality validation.
 
 ---
 
-## 16. Chunking Design
+## External LLM status
 
-The legal chunker supports:
+External LLM generation is not active by default.
 
-```text
-Articolul 15.
-Art. 15
-Articolul 15^1
-Art. II
-CAPITOLUL ...
-SECȚIUNEA ...
-(1)
-(2)
-a)
-b)
-```
+Current response generation is deterministic and citation-based.
 
-For each chunk, the service stores:
+Current flow:
 
 ```text
-content
-article_number
-section_title
-point_number
-page_number
-metadata
+query
+→ retrieve chunks
+→ build citations
+→ build deterministic answer from retrieved citation text
 ```
 
-Additional metadata may include:
-
-```json
-{
-  "chunk_type": "legal_article",
-  "headings": ["CAPITOLUL II", "SECȚIUNEA 1"],
-  "paragraph_number": "1",
-  "chunk_part": 1,
-  "chunk_total": 1,
-  "document_preamble": "..."
-}
-```
-
-Long articles are split into overlapping subchunks while preserving the same legal metadata.
-
----
-
-## 17. Data Storage
-
-### SQLite
-
-SQLite stores:
+Planned optional flow:
 
 ```text
-jobs
-idempotency_keys
-sources
-chunks
-namespace_stats
+query
+→ retrieve chunks
+→ build grounded prompt
+→ external/internal LLM generation
+→ preserve citations
+→ fallback to deterministic answer on LLM failure
 ```
 
-Default path:
+Default configuration:
 
-```text
-./data/app.db
-```
-
-### Qdrant
-
-Qdrant stores vector points in collection:
-
-```text
-rag_chunks
-```
-
-Each point includes:
-
-```json
-{
-  "tenant_id": "...",
-  "namespace_id": "...",
-  "source_id": "...",
-  "article_number": "15",
-  "content": "...",
-  "source_title": "...",
-  "source_url": "...",
-  "metadata": {}
-}
+```env
+LLM_PROVIDER=none
 ```
 
 ---
 
-## 18. Security and Isolation
-
-Implemented:
-
-- Bearer API-key validation.
-- Required `X-Request-ID`.
-- Required `X-Tenant-ID`.
-- Tenant-scoped idempotency.
-- Tenant-scoped SQLite queries.
-- Tenant-scoped Qdrant vector filters.
-- Cross-tenant isolation tests.
-
-Important invariant:
-
-```text
-A tenant must never retrieve chunks or vectors belonging to another tenant.
-```
-
----
-
-## 19. Troubleshooting
+## Troubleshooting
 
 ### Qdrant connection refused
 
-Check that Qdrant is running:
+Start Qdrant:
 
 ```powershell
 docker compose -f docker-compose.local.yml up qdrant
@@ -990,7 +951,19 @@ Verify:
 curl.exe http://localhost:6333/collections
 ```
 
----
+### Local tests cannot reach Qdrant
+
+For local `pytest`, use:
+
+```env
+QDRANT_URL=http://localhost:6333
+```
+
+For Docker Compose, use:
+
+```env
+QDRANT_URL=http://qdrant:6333
+```
 
 ### Sentence-transformers model download is slow
 
@@ -1002,107 +975,14 @@ Model:
 paraphrase-multilingual-MiniLM-L12-v2
 ```
 
----
-
 ### PowerShell corrupts diacritics
 
-For Unicode-safe endpoint tests, use:
+For Unicode-safe endpoint tests, prefer:
 
 ```powershell
 python smoke_endpoints.py
 ```
 
-instead of complex PowerShell JSON bodies.
+over long inline PowerShell JSON strings.
 
 ---
-
-### Tests fail because Qdrant contains stale data
-
-The test suite resets the Qdrant collection when `VECTOR_STORE=qdrant`.
-
-If needed, manually recreate the collection by restarting Qdrant or using the test reset helper.
-
----
-
-### FastAPI `on_event` deprecation warning
-
-The application may show:
-
-```text
-on_event is deprecated, use lifespan event handlers instead
-```
-
-This is currently non-blocking and can be cleaned up later by switching to FastAPI lifespan handlers.
-
----
-
-## 20. Planned Improvements
-
-Before requesting Bitbucket access:
-
-1. Verify Docker build.
-2. Verify full `docker-compose.local.yml` stack.
-3. Validate `docker-compose.service.yml`.
-4. Replace or align `openapi.yaml`.
-5. Wrap FastAPI validation errors in the standard `ErrorResponse` format.
-6. Add response headers:
-   - `X-Request-ID`;
-   - `X-Vendor-Trace-ID`;
-   - `X-Vendor-Retrieval-Strategy`;
-   - `Server-Timing`.
-7. Add real URL fetching.
-8. Add text/HTML/PDF extraction.
-9. Add multipart file ingest.
-10. Optionally add `/metrics`.
-11. Optionally add LLM generation behind `LLM_PROVIDER`.
-
----
-
-## 21. Requires CityDock Access
-
-The following cannot be completed locally:
-
-- Push to their Bitbucket organization.
-- Create official semver release tag in their repo.
-- Trigger their self-hosted Bitbucket runner.
-- Produce official CI logs.
-- Push image to their GCP Artifact Registry.
-- Deploy into their stack.
-- Run their official acceptance/eval suite.
-- Produce official handoff artifacts from their environment.
-
----
-
-## 22. Suggested Local Release Tag
-
-After local verification:
-
-```powershell
-git tag v0.1.0-local
-```
-
-Do not push to CityDock until repository access is granted.
-
----
-
-## 23. Current Summary
-
-This project currently implements a local FastAPI RAG service with:
-
-```text
-authenticated /v1 endpoints
-tenant isolation
-idempotent ingest
-persistent SQLite storage
-Qdrant vector indexing
-sentence-transformers embeddings
-legal article chunking
-hybrid retrieval
-citation-grounded deterministic answers
-no-hallucination fallback
-namespace lifecycle operations
-endpoint smoke tests
-automated test coverage
-```
-
-It does not yet implement external LLM generation, real URL/PDF/HTML ingestion, multipart upload, production observability, or official Bitbucket/GCP deployment.
