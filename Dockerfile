@@ -3,7 +3,9 @@ FROM python:3.12-slim AS builder
 WORKDIR /build
 
 COPY requirements.txt .
-RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+
+RUN pip install --upgrade pip \
+    && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 FROM python:3.12-slim AS runtime
 
@@ -16,7 +18,10 @@ RUN groupadd -g 1000 appuser \
     && useradd -u 1000 -g appuser -m appuser
 
 COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir /wheels/*
+
+RUN pip install --no-cache-dir /wheels/* \
+    && pip cache purge \
+    && rm -rf /wheels
 
 COPY app ./app
 COPY openapi.yaml ./openapi.yaml
