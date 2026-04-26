@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from app.config import settings
+from app.services import vector_store
 from app.errors import raise_error
 from app.models import DeleteNamespaceResponse, NamespaceStats
 from app.services import sqlite_store as store
@@ -45,6 +46,13 @@ def delete_source_data(tenant_id: str, request_id: str, namespace_id: str, sourc
 
     store.delete_source(tenant_id, namespace_id, source_id)
 
+    if settings.vector_store.lower() == "qdrant":
+        vector_store.delete_source(
+            tenant_id=tenant_id,
+            namespace_id=namespace_id,
+            source_id=source_id,
+        )
+
 
 def delete_namespace_data(tenant_id: str, request_id: str, namespace_id: str) -> DeleteNamespaceResponse:
     if not store.namespace_exists(tenant_id, namespace_id):
@@ -57,4 +65,11 @@ def delete_namespace_data(tenant_id: str, request_id: str, namespace_id: str) ->
         )
 
     store.delete_namespace(tenant_id, namespace_id)
+
+    if settings.vector_store.lower() == "qdrant":
+        vector_store.delete_namespace(
+            tenant_id=tenant_id,
+            namespace_id=namespace_id,
+        )
+
     return DeleteNamespaceResponse(job_id=f"del_{uuid.uuid4().hex[:12]}")

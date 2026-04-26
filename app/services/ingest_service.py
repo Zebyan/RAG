@@ -11,6 +11,9 @@ from app.errors import raise_error
 from app.models import IngestAcceptedResponse, IngestJobStatus, IngestProgress, IngestRequest
 from app.services import sqlite_store as store
 from app.services.legal_chunker import chunk_legal_text
+from app.services.embedding_service import embed_texts
+from app.services import vector_store
+
 
 ALLOWED_MIME_TYPES = {"text/html", "application/pdf", "text/plain", "text/markdown"}
 
@@ -31,6 +34,30 @@ def _extract_article_number(text: str) -> str | None:
     )
     return match.group(1) if match else None
 
+def _index_chunks_in_vector_store(
+    tenant_id: str,
+    chunks: list[dict],
+) -> None:
+    """
+    Index chunk embeddings into the configured vector store.
+
+    For now:
+      - VECTOR_STORE=qdrant -> embed and upsert into Qdrant
+      - anything else -> skip vector indexing
+    """
+    if settings.vector_store.lower() != "qdrant":
+        return
+
+    if not chunks:
+        return
+
+    vectors = embed_texts([chunk["content"] for chunk in chunks])
+
+    vector_store.upsert_chunks(
+        tenant_id=tenant_id,
+        chunks=chunks,
+        vectors=vectors,
+    )
 
 def _chunk_text_by_articles(text: str) -> list[str]:
     """
@@ -145,6 +172,7 @@ def _process_ingest_synchronously(tenant_id: str, request: IngestRequest, job: d
     legal_chunks = chunk_legal_text(text)
 
     chunk_ids: list[str] = []
+    chunk_records: list[dict] = []
 
     for legal_chunk in legal_chunks:
         chunk_id = str(uuid.uuid4())
@@ -153,24 +181,40 @@ def _process_ingest_synchronously(tenant_id: str, request: IngestRequest, job: d
         chunk_metadata = dict(request.metadata)
         chunk_metadata.update(legal_chunk.metadata)
 
+        chunk_record = {
+            "chunk_id": chunk_id,
+            "content": legal_chunk.content[:4000],
+            "article_number": legal_chunk.article_number,
+            "section_title": legal_chunk.section_title,
+            "point_number": legal_chunk.point_number,
+            "page_number": legal_chunk.page_number,
+            "source_id": request.source_id,
+            "source_url": request.url,
+            "source_title": request.metadata.get("source_title"),
+            "namespace_id": request.namespace_id,
+            "score": 0.0,
+            "metadata": chunk_metadata,
+        }
+
+        chunk_records.append(chunk_record)
+
         store.set_chunk(
             tenant_id,
             chunk_id,
-            {
-                "chunk_id": chunk_id,
-                "content": legal_chunk.content[:4000],
-                "article_number": legal_chunk.article_number,
-                "section_title": legal_chunk.section_title,
-                "point_number": legal_chunk.point_number,
-                "page_number": legal_chunk.page_number,
-                "source_id": request.source_id,
-                "source_url": request.url,
-                "source_title": request.metadata.get("source_title"),
-                "namespace_id": request.namespace_id,
-                "score": 0.0,
-                "metadata": chunk_metadata,
-            },
+            chunk_record,
         )
+
+    job["progress"] = {
+    "stage": "embedding",
+    "percent": 75,
+    "chunks_created": len(chunk_ids),
+    }
+    store.set_job(tenant_id, job["job_id"], job)
+
+    _index_chunks_in_vector_store(
+        tenant_id=tenant_id,
+        chunks=chunk_records,
+    )
 
     store.register_source(
         tenant_id=tenant_id,
@@ -183,9 +227,13 @@ def _process_ingest_synchronously(tenant_id: str, request: IngestRequest, job: d
     completed_at = utc_now()
     job.update(
         {
-            "status": "done",
-            "progress": {"stage": "indexing", "percent": 100, "chunks_created": len(legal_chunks)},
-            "completed_at": completed_at,
+        "status": "done",
+        "progress": {
+            "stage": "indexing",
+            "percent": 100,
+            "chunks_created": len(chunk_ids),
+        },
+        "completed_at": completed_at,
         }
     )
     store.set_job(tenant_id, job["job_id"], job)
