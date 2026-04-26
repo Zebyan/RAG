@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -11,6 +10,7 @@ from app.config import settings
 from app.errors import raise_error
 from app.models import IngestAcceptedResponse, IngestJobStatus, IngestProgress, IngestRequest
 from app.services import sqlite_store as store
+from app.services.legal_chunker import chunk_legal_text
 
 ALLOWED_MIME_TYPES = {"text/html", "application/pdf", "text/plain", "text/markdown"}
 
@@ -142,28 +142,33 @@ def _process_ingest_synchronously(tenant_id: str, request: IngestRequest, job: d
         # Placeholder chunk for URL metadata-only ingest.
         text = f"Document source {request.source_id} from {request.url or 'local file'}."
 
-    chunks_text = _chunk_text_by_articles(text)
+    legal_chunks = chunk_legal_text(text)
 
     chunk_ids: list[str] = []
-    for raw_chunk in chunks_text:
+
+    for legal_chunk in legal_chunks:
         chunk_id = str(uuid.uuid4())
         chunk_ids.append(chunk_id)
+
+        chunk_metadata = dict(request.metadata)
+        chunk_metadata.update(legal_chunk.metadata)
+
         store.set_chunk(
             tenant_id,
             chunk_id,
             {
                 "chunk_id": chunk_id,
-                "content": raw_chunk[:4000],
-                "article_number": _extract_article_number(raw_chunk),
-                "section_title": None,
-                "point_number": None,
-                "page_number": None,
+                "content": legal_chunk.content[:4000],
+                "article_number": legal_chunk.article_number,
+                "section_title": legal_chunk.section_title,
+                "point_number": legal_chunk.point_number,
+                "page_number": legal_chunk.page_number,
                 "source_id": request.source_id,
                 "source_url": request.url,
                 "source_title": request.metadata.get("source_title"),
                 "namespace_id": request.namespace_id,
                 "score": 0.0,
-                "metadata": dict(request.metadata),
+                "metadata": chunk_metadata,
             },
         )
 
@@ -179,7 +184,7 @@ def _process_ingest_synchronously(tenant_id: str, request: IngestRequest, job: d
     job.update(
         {
             "status": "done",
-            "progress": {"stage": "indexing", "percent": 100, "chunks_created": len(chunk_ids)},
+            "progress": {"stage": "indexing", "percent": 100, "chunks_created": len(legal_chunks)},
             "completed_at": completed_at,
         }
     )
@@ -192,7 +197,7 @@ def _process_ingest_synchronously(tenant_id: str, request: IngestRequest, job: d
             "namespace_id": request.namespace_id,
             "chunk_count": len(chunk_ids),
             "source_count": 1,
-            "total_tokens_indexed": sum(len(c.split()) for c in chunks_text),
+            "total_tokens_indexed": sum(len(chunk.content.split()) for chunk in legal_chunks),
             "last_ingested_at": completed_at,
             "embedding_model": settings.embedding_model,
             "embedding_dim": settings.embedding_dim,
