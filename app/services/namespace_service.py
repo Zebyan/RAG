@@ -5,7 +5,7 @@ import uuid
 from app.config import settings
 from app.errors import raise_error
 from app.models import DeleteNamespaceResponse, NamespaceStats
-from app.services import store
+from app.services import sqlite_store as store
 
 
 def get_namespace_stats_data(tenant_id: str, request_id: str, namespace_id: str) -> NamespaceStats:

@@ -10,8 +10,7 @@ from typing import Any
 from app.config import settings
 from app.errors import raise_error
 from app.models import IngestAcceptedResponse, IngestJobStatus, IngestProgress, IngestRequest
-from app.services import store
-
+from app.services import sqlite_store as store
 
 ALLOWED_MIME_TYPES = {"text/html", "application/pdf", "text/plain", "text/markdown"}
 

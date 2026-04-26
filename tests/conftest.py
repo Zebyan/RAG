@@ -2,12 +2,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.sqlite_store import reset_db
 
+@pytest.fixture(autouse=True)
+def reset_sqlite_store():
+    reset_db()
+    yield
 
 @pytest.fixture()
 def client():
     return TestClient(app)
-
 
 @pytest.fixture()
 def auth_headers():

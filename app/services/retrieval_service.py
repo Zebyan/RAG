@@ -5,7 +5,7 @@ import unicodedata
 from collections import defaultdict
 
 from app.models import Chunk
-from app.services import store
+from app.services import sqlite_store as store
 
 
 ROMANIAN_STOPWORDS = {
