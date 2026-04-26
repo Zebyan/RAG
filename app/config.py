@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
     embedding_dim: int = 384
 
+    url_fetch_timeout_seconds: float = 60.0
+
     llm_provider: str = "none"
     anthropic_api_key: str | None = None
     webhook_secret: str | None = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -13,7 +14,7 @@ from app.services import sqlite_store as store
 from app.services.legal_chunker import chunk_legal_text
 from app.services.embedding_service import embed_texts
 from app.services import vector_store
-
+from app.services.url_fetcher import UrlFetchError, fetch_url_document
 
 ALLOWED_MIME_TYPES = {"text/html", "application/pdf", "text/plain", "text/markdown"}
 
@@ -33,6 +34,38 @@ def _extract_article_number(text: str) -> str | None:
         text,
     )
     return match.group(1) if match else None
+
+def _resolve_ingest_text_and_metadata(request: IngestRequest) -> tuple[str, dict]:
+    """
+    Resolve ingest text.
+
+    Priority:
+    1. metadata.text local fixture override
+    2. source_type=url fetch + extract
+    """
+    metadata = dict(request.metadata or {})
+
+    metadata_text = metadata.get("text")
+    if isinstance(metadata_text, str) and metadata_text.strip():
+        metadata["text_source"] = "metadata.text"
+        return metadata_text, metadata
+
+    if request.source_type == "url":
+        if not request.url:
+            raise ValueError("URL is required when source_type is url.")
+
+        fetched = fetch_url_document(
+            url=str(request.url),
+            mime_type_hint=request.mime_type_hint,
+        )
+
+        metadata.update(fetched.extracted.metadata)
+        metadata.update(fetched.metadata)
+        metadata["text_source"] = "url_fetch"
+
+        return fetched.extracted.text, metadata
+
+    raise ValueError("No extractable text found for ingest request.")
 
 def _index_chunks_in_vector_store(
     tenant_id: str,
@@ -162,95 +195,140 @@ def create_ingest_job(
     )
 
 
-def _process_ingest_synchronously(tenant_id: str, request: IngestRequest, job: dict[str, Any]) -> None:
-    text = str(request.metadata.get("text", "")).strip()
-
-    if not text:
-        # Placeholder chunk for URL metadata-only ingest.
-        text = f"Document source {request.source_id} from {request.url or 'local file'}."
-
-    legal_chunks = chunk_legal_text(text)
-
-    chunk_ids: list[str] = []
-    chunk_records: list[dict] = []
-
-    for legal_chunk in legal_chunks:
-        chunk_id = str(uuid.uuid4())
-        chunk_ids.append(chunk_id)
-
-        chunk_metadata = dict(request.metadata)
-        chunk_metadata.update(legal_chunk.metadata)
-
-        chunk_record = {
-            "chunk_id": chunk_id,
-            "content": legal_chunk.content[:4000],
-            "article_number": legal_chunk.article_number,
-            "section_title": legal_chunk.section_title,
-            "point_number": legal_chunk.point_number,
-            "page_number": legal_chunk.page_number,
-            "source_id": request.source_id,
-            "source_url": request.url,
-            "source_title": request.metadata.get("source_title"),
-            "namespace_id": request.namespace_id,
-            "score": 0.0,
-            "metadata": chunk_metadata,
+def _process_ingest_synchronously(
+    tenant_id: str,
+    request: IngestRequest,
+    job: dict[str, Any],
+) -> None:
+    try:
+        job["progress"] = {
+            "stage": "extracting",
+            "percent": 20,
+            "chunks_created": 0,
         }
+        store.set_job(tenant_id, job["job_id"], job)
 
-        chunk_records.append(chunk_record)
+        text, resolved_metadata = _resolve_ingest_text_and_metadata(request)
 
-        store.set_chunk(
-            tenant_id,
-            chunk_id,
-            chunk_record,
+        if not text.strip():
+            raise ValueError("Extracted document text is empty.")
+
+        job["progress"] = {
+            "stage": "chunking",
+            "percent": 40,
+            "chunks_created": 0,
+        }
+        store.set_job(tenant_id, job["job_id"], job)
+
+        legal_chunks = chunk_legal_text(text)
+
+        if not legal_chunks:
+            raise ValueError("No chunks were created from the extracted document text.")
+
+        chunk_ids: list[str] = []
+        chunk_records: list[dict] = []
+
+        for legal_chunk in legal_chunks:
+            chunk_id = str(uuid.uuid4())
+            chunk_ids.append(chunk_id)
+
+            chunk_metadata = dict(resolved_metadata)
+            chunk_metadata.update(legal_chunk.metadata)
+
+            chunk_record = {
+                "chunk_id": chunk_id,
+                "content": legal_chunk.content[:4000],
+                "article_number": legal_chunk.article_number,
+                "section_title": legal_chunk.section_title,
+                "point_number": legal_chunk.point_number,
+                "page_number": legal_chunk.page_number,
+                "source_id": request.source_id,
+                "source_url": request.url,
+                "source_title": resolved_metadata.get("source_title"),
+                "namespace_id": request.namespace_id,
+                "score": 0.0,
+                "metadata": chunk_metadata,
+            }
+
+            chunk_records.append(chunk_record)
+
+            store.set_chunk(
+                tenant_id,
+                chunk_id,
+                chunk_record,
+            )
+
+        job["progress"] = {
+            "stage": "embedding",
+            "percent": 75,
+            "chunks_created": len(chunk_ids),
+        }
+        store.set_job(tenant_id, job["job_id"], job)
+
+        _index_chunks_in_vector_store(
+            tenant_id=tenant_id,
+            chunks=chunk_records,
         )
 
-    job["progress"] = {
-    "stage": "embedding",
-    "percent": 75,
-    "chunks_created": len(chunk_ids),
-    }
-    store.set_job(tenant_id, job["job_id"], job)
+        store.register_source(
+            tenant_id=tenant_id,
+            namespace_id=request.namespace_id,
+            source_id=request.source_id,
+            chunk_ids=chunk_ids,
+            meta=resolved_metadata,
+        )
 
-    _index_chunks_in_vector_store(
-        tenant_id=tenant_id,
-        chunks=chunk_records,
-    )
+        completed_at = utc_now()
 
-    store.register_source(
-        tenant_id=tenant_id,
-        namespace_id=request.namespace_id,
-        source_id=request.source_id,
-        chunk_ids=chunk_ids,
-        meta=request.metadata,
-    )
+        job.update(
+            {
+                "status": "done",
+                "progress": {
+                    "stage": "indexing",
+                    "percent": 100,
+                    "chunks_created": len(chunk_ids),
+                },
+                "completed_at": completed_at,
+                "error": None,
+            }
+        )
+        store.set_job(tenant_id, job["job_id"], job)
 
-    completed_at = utc_now()
-    job.update(
-        {
-        "status": "done",
-        "progress": {
-            "stage": "indexing",
-            "percent": 100,
-            "chunks_created": len(chunk_ids),
-        },
-        "completed_at": completed_at,
-        }
-    )
-    store.set_job(tenant_id, job["job_id"], job)
+        store.update_ns_stats(
+            tenant_id,
+            request.namespace_id,
+            {
+                "namespace_id": request.namespace_id,
+                "chunk_count": len(chunk_ids),
+                "source_count": 1,
+                "total_tokens_indexed": sum(
+                    len(chunk.content.split()) for chunk in legal_chunks
+                ),
+                "last_ingested_at": completed_at,
+                "embedding_model": settings.embedding_model,
+                "embedding_dim": settings.embedding_dim,
+            },
+        )
 
-    store.update_ns_stats(
-        tenant_id,
-        request.namespace_id,
-        {
-            "namespace_id": request.namespace_id,
-            "chunk_count": len(chunk_ids),
-            "source_count": 1,
-            "total_tokens_indexed": sum(len(chunk.content.split()) for chunk in legal_chunks),
-            "last_ingested_at": completed_at,
-            "embedding_model": settings.embedding_model,
-            "embedding_dim": settings.embedding_dim,
-        },
-    )
+    except (ValueError, UrlFetchError) as exc:
+        completed_at = utc_now()
+
+        job.update(
+            {
+                "status": "failed",
+                "progress": {
+                    "stage": "failed",
+                    "percent": 100,
+                    "chunks_created": 0,
+                },
+                "completed_at": completed_at,
+                "error": {
+                    "code": "INGEST_FAILED",
+                    "message": str(exc),
+                },
+            }
+        )
+        store.set_job(tenant_id, job["job_id"], job)
 
 
 def get_ingest_job(tenant_id: str, request_id: str, job_id: str) -> IngestJobStatus:
