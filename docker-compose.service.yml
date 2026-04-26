@@ -5,6 +5,11 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    environment:
+      DATABASE_PATH: /app/data/app.db
+      VECTOR_STORE: ${VECTOR_STORE:-qdrant}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-rag_chunks}
     expose:
       - "8080"
     volumes:
