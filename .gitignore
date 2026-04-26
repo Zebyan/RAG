@@ -1,29 +1,32 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
 
-# Virtual env
+# Virtual environments
 .venv/
 venv/
+env/
 
-# Env
+# Environment files
 .env
+.env.*
+!.env.example
 
-# Local data
-data/*
+# Local data / databases
+data/
 !data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
 
-# IDE
-.vscode/
-.idea/
+# Generated local artifacts
+generated-openapi.local.json
 
-# OS
+# OS/editor
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/

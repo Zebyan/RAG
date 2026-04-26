@@ -4,8 +4,11 @@ import re
 import unicodedata
 from collections import defaultdict
 
+from app.config import settings
 from app.models import Chunk
 from app.services import sqlite_store as store
+from app.services.embedding_service import embed_text
+from app.services import vector_store
 
 
 ROMANIAN_STOPWORDS = {
@@ -29,14 +32,9 @@ def _tokens(text: str) -> set[str]:
 
 
 def _rough_stem(token: str) -> str:
-    """
-    Very small Romanian-friendly stemming approximation for MVP scoring.
-    It is only used for retrieval scoring, not for modifying citation content.
-    """
     suffixes = [
-        "urilor", "elor", "ilor", "ului", "ului",
-        "ele", "ile", "ului", "ului", "lor",
-        "atea", "ului", "ului", "ului",
+        "urilor", "elor", "ilor", "ului",
+        "ele", "ile", "lor", "atea",
         "ul", "le", "ii", "ei", "ea", "a", "e", "i",
     ]
 
@@ -52,8 +50,7 @@ def _expanded_tokens(text: str) -> set[str]:
     expanded = set(base)
 
     for token in base:
-        stem = _rough_stem(token)
-        expanded.add(stem)
+        expanded.add(_rough_stem(token))
 
     return expanded
 
@@ -70,8 +67,6 @@ def _soft_overlap(question_tokens: set[str], content_tokens: set[str]) -> float:
                 matches += 1
                 break
 
-            # Prefix matching for close Romanian forms:
-            # societate / societatea, persoana / persoane, obligatie / obligatii
             if len(q) >= 5 and len(c) >= 5:
                 if q.startswith(c[:5]) or c.startswith(q[:5]):
                     matches += 1
@@ -88,8 +83,6 @@ def _keyword_score(question: str, content: str) -> float:
         return 0.0
 
     overlap = _soft_overlap(q, c)
-
-    # More permissive lexical score for Romanian legal MVP retrieval.
     return min(overlap * 0.55, 0.55)
 
 
@@ -98,8 +91,8 @@ def _phrase_score(question: str, content: str) -> float:
     c_norm = _normalize(content)
 
     q_tokens = [
-        t for t in re.findall(r"\w+", q_norm)
-        if len(t) > 2 and t not in ROMANIAN_STOPWORDS
+        token for token in re.findall(r"\w+", q_norm)
+        if len(token) > 2 and token not in ROMANIAN_STOPWORDS
     ]
 
     if len(q_tokens) < 2:
@@ -124,10 +117,14 @@ def _article_score(chunk_article: str | None, hint_article_number: str | None) -
     if not hint_article_number or not chunk_article:
         return 0.0
 
-    return 0.70 if chunk_article == hint_article_number else 0.0
+    return 0.85 if chunk_article == hint_article_number else 0.0
 
 
-def _final_score(
+def _clamp_score(value: float) -> float:
+    return max(0.0, min(value, 1.0))
+
+
+def _lexical_final_score(
     question: str,
     content: str,
     chunk_article: str | None,
@@ -137,11 +134,141 @@ def _final_score(
     keyword = _keyword_score(question, content)
     phrase = _phrase_score(question, content)
 
-    score = article + keyword + phrase
-    return min(score, 1.0)
+    return _clamp_score(article + keyword + phrase)
 
 
-def _ensure_namespace_diversity(chunks: list[Chunk], requested_namespaces: list[str], top_k: int) -> list[Chunk]:
+def _vector_score(raw_score: float) -> float:
+    """
+    Qdrant cosine scores are higher-is-better.
+    Clamp to [0, 1] for consistent final scoring.
+    """
+    return _clamp_score(raw_score)
+
+
+def _sqlite_candidates(
+    tenant_id: str,
+    namespaces: list[str],
+    question: str,
+    hint_article_number: str | None,
+) -> list[Chunk]:
+    raw_chunks = store.list_chunks(tenant_id=tenant_id, namespaces=namespaces)
+
+    candidates: list[Chunk] = []
+
+    for raw in raw_chunks:
+        score = _lexical_final_score(
+            question=question,
+            content=raw["content"],
+            chunk_article=raw.get("article_number"),
+            hint_article_number=hint_article_number,
+        )
+
+        # Keep only relevant lexical/article candidates.
+        if score < 0.15:
+            continue
+
+        payload = dict(raw)
+        payload["score"] = score
+        candidates.append(Chunk(**payload))
+
+    return candidates
+
+
+def _qdrant_candidates(
+    tenant_id: str,
+    namespaces: list[str],
+    question: str,
+    top_k: int,
+) -> list[Chunk]:
+    if settings.vector_store.lower() != "qdrant":
+        return []
+
+    if not namespaces:
+        return []
+
+    query_vector = embed_text(question)
+
+    vector_chunks = vector_store.search_chunks(
+        tenant_id=tenant_id,
+        namespaces=namespaces,
+        query_vector=query_vector,
+        top_k=max(top_k * 2, 10),
+    )
+
+    candidates: list[Chunk] = []
+
+    for chunk in vector_chunks:
+        score = _vector_score(chunk.score)
+
+        # Avoid hallucination from weak vector-only matches.
+        if score < 0.45:
+            continue
+
+        chunk.score = score
+        candidates.append(chunk)
+
+    return candidates
+
+
+def _merge_and_rerank(
+    question: str,
+    hint_article_number: str | None,
+    lexical_chunks: list[Chunk],
+    vector_chunks: list[Chunk],
+) -> list[Chunk]:
+    by_chunk_id: dict[str, Chunk] = {}
+    vector_scores: dict[str, float] = {}
+    lexical_scores: dict[str, float] = {}
+
+    for chunk in vector_chunks:
+        by_chunk_id[chunk.chunk_id] = chunk
+        vector_scores[chunk.chunk_id] = chunk.score
+
+    for chunk in lexical_chunks:
+        by_chunk_id[chunk.chunk_id] = chunk
+        lexical_scores[chunk.chunk_id] = chunk.score
+
+    reranked: list[Chunk] = []
+
+    for chunk_id, chunk in by_chunk_id.items():
+        lexical = lexical_scores.get(chunk_id)
+
+        if lexical is None:
+            lexical = _lexical_final_score(
+                question=question,
+                content=chunk.content,
+                chunk_article=chunk.article_number,
+                hint_article_number=hint_article_number,
+            )
+
+        vector = vector_scores.get(chunk_id, 0.0)
+        article = _article_score(chunk.article_number, hint_article_number)
+
+        # Hybrid score:
+        # - exact article match is strongest for legal documents
+        # - vector search helps semantic retrieval
+        # - lexical/phrase score protects against vector-only false positives
+        if article > 0:
+            final_score = max(article, lexical) + 0.10 * vector
+        elif vector > 0:
+            final_score = 0.65 * vector + 0.35 * lexical
+        else:
+            final_score = lexical
+
+        chunk.score = _clamp_score(final_score)
+
+        if chunk.score >= 0.25:
+            reranked.append(chunk)
+
+    reranked.sort(key=lambda item: item.score, reverse=True)
+    return reranked
+
+
+def _ensure_namespace_diversity(
+    chunks: list[Chunk],
+    requested_namespaces: list[str],
+    top_k: int,
+) -> list[Chunk]:
     if len(requested_namespaces) <= 1:
         return chunks[:top_k]
 
@@ -177,28 +304,29 @@ def retrieve_chunks(
     top_k: int,
     hint_article_number: str | None,
 ) -> list[Chunk]:
-    candidates = store.list_chunks(tenant_id=tenant_id, namespaces=namespaces)
+    lexical_chunks = _sqlite_candidates(
+        tenant_id=tenant_id,
+        namespaces=namespaces,
+        question=question,
+        hint_article_number=hint_article_number,
+    )
 
-    scored: list[Chunk] = []
+    vector_chunks = _qdrant_candidates(
+        tenant_id=tenant_id,
+        namespaces=namespaces,
+        question=question,
+        top_k=top_k,
+    )
 
-    for raw in candidates:
-        score = _final_score(
-            question=question,
-            content=raw["content"],
-            chunk_article=raw.get("article_number"),
-            hint_article_number=hint_article_number,
-        )
+    merged = _merge_and_rerank(
+        question=question,
+        hint_article_number=hint_article_number,
+        lexical_chunks=lexical_chunks,
+        vector_chunks=vector_chunks,
+    )
 
-        # More tolerant threshold for MVP keyword retrieval.
-        # Exact no-answer behavior is still preserved because completely unrelated
-        # chunks score close to 0.
-        if score < 0.15:
-            continue
-
-        payload = dict(raw)
-        payload["score"] = score
-        scored.append(Chunk(**payload))
-
-    scored.sort(key=lambda chunk: chunk.score, reverse=True)
-
-    return _ensure_namespace_diversity(scored, namespaces, top_k)
+    return _ensure_namespace_diversity(
+        chunks=merged,
+        requested_namespaces=namespaces,
+        top_k=top_k,
+    )

@@ -209,3 +209,26 @@ def delete_namespace(tenant_id: str, namespace_id: str) -> None:
         ),
         wait=False,
     )
+
+def reset_collection() -> None:
+    """
+    Drop and recreate the Qdrant collection.
+
+    Used by tests to avoid stale vector data between test cases.
+    """
+    client = get_qdrant_client()
+    collection_name = settings.qdrant_collection
+
+    existing = client.get_collections()
+    existing_names = {collection.name for collection in existing.collections}
+
+    if collection_name in existing_names:
+        client.delete_collection(collection_name=collection_name)
+
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(
+            size=settings.embedding_dim,
+            distance=Distance.COSINE,
+        ),
+    )
