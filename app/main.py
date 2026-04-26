@@ -1,4 +1,7 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from requests import Request
 
 from app.config import settings
 from app.errors import RagHTTPException, rag_http_exception_handler, generic_http_exception_handler
@@ -26,6 +29,27 @@ def create_app() -> FastAPI:
     async def startup_event() -> None:
         init_db()
 
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        request_id = request.headers.get("X-Request-ID")
+
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Request validation failed.",
+                    "request_id": request_id,
+                    "details": {
+                        "errors": exc.errors(),
+                    },
+                }
+            },
+        )
     return app
 
 
