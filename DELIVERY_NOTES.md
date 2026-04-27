@@ -16,7 +16,7 @@ The local implementation includes the core CityDock / Lex-Advisor RAG service fe
 - `/v1/namespaces/{namespace_id}/stats`.
 - `DELETE /v1/namespaces/{namespace_id}/sources/{source_id}`.
 - `DELETE /v1/namespaces/{namespace_id}`.
-- `/v1/openapi.json`.
+- `/v1/openapi.json`, serving the static `openapi.yaml` contract as JSON.
 
 ### Security, headers, and isolation
 
@@ -25,7 +25,16 @@ The local implementation includes the core CityDock / Lex-Advisor RAG service fe
 - Required `X-Tenant-ID` tenant scoping.
 - Tenant-scoped data isolation.
 - Tenant-scoped idempotency through `Idempotency-Key`.
-- Standard validation error response envelope.
+- Standard validation/error response envelope.
+- Lowercase contract-aligned error codes:
+  - `invalid_request`;
+  - `unauthorized`;
+  - `not_found`;
+  - `namespace_not_found`;
+  - `duplicate_job`;
+  - `payload_too_large`;
+  - `unsupported_media_type`;
+  - `validation_error`.
 - Standard response headers:
   - `X-Request-ID`;
   - `X-Vendor-Trace-ID`;
@@ -40,22 +49,40 @@ The local implementation includes the core CityDock / Lex-Advisor RAG service fe
 - Source registry.
 - Chunk metadata persistence.
 - Namespace statistics.
-- Source deletion.
-- Namespace deletion.
+- Source deletion with `204 No Content`.
+- Namespace deletion with contract-aligned `202 Accepted` response:
+  - `job_id: del_...`;
+  - `status: queued`;
+  - `sla: 24h`.
 - Qdrant cleanup on source deletion.
 - Qdrant cleanup on namespace deletion.
+- Post-delete query behavior verified:
+  - `answer: null`;
+  - `citations: []`;
+  - `confidence: 0.0`.
 
 ### Ingest and document processing
 
 - Synchronous local ingest processing.
 - URL fetching wired into ingest for `source_type=url`.
+- URL fetch failure represented as failed ingest job.
 - Multipart file upload ingest for `source_type=file`.
+- Multipart validation:
+  - missing `payload`;
+  - missing `file`;
+  - invalid multipart payload.
+- Oversized multipart file upload rejected before job creation with:
+  - HTTP `413`;
+  - `payload_too_large`;
+  - `max_size_bytes`;
+  - `actual_size_bytes`.
 - Document extraction service for:
   - `text/plain`;
   - `text/markdown`;
   - `text/html`;
   - `application/pdf`.
 - MIME validation.
+- Unsupported MIME rejected with `415 unsupported_media_type`.
 - Maximum document size validation through extraction layer.
 - Article-aware Romanian legal chunking.
 - Section/chapter metadata extraction.
@@ -84,35 +111,114 @@ The local implementation includes the core CityDock / Lex-Advisor RAG service fe
   - rough Romanian word-form matching;
   - namespace diversity.
 - Citation-based deterministic answers.
+- Retrieval-only mode with `include_answer=false`.
 - No-hallucination empty-result behavior:
   - `answer: null`;
   - `citations: []`;
   - `confidence: 0.0`.
+- Exact article query tests.
+- Semantic retrieval test.
+- Uploaded-file retrieval test.
 - Multi-namespace retrieval tests.
 - Cross-tenant isolation tests.
+
+### OpenAPI contract status
+
+- Root `openapi.yaml` is present.
+- `/v1/openapi.json` serves the static `openapi.yaml` contract as JSON.
+- Runtime schema endpoint is aligned with the static contract.
+- Local comparison results:
+  - no paths only in generated schema;
+  - no paths only in `openapi.yaml`;
+  - no response-code differences.
+- `generated-openapi.local.json` remains a local debug artifact and should not be committed.
 
 ### Docker and local verification
 
 - Dockerfile.
+- Python base image pinned by SHA digest.
+- Non-root `appuser`.
+- Service listens on port `8080`.
+- Healthcheck uses `/v1/health`.
 - `docker-compose.local.yml` with API + Qdrant.
 - `docker-compose.service.yml` deployment fragment.
 - `docker-compose.service.yml` validates with `docker compose config`.
 - Docker image build verified locally.
 - Docker Compose local stack verified locally.
-- Docker endpoint smoke tests passing.
-- Python endpoint smoke test.
+- Expanded Python endpoint smoke test.
+- Optional smoke coverage for oversized multipart upload and optional endpoints.
 - Automated test suite passing locally.
 
 ### Repository documentation
 
 - Main `README.md`.
 - `DELIVERY_NOTES.md`.
+- `docs/TECHNICAL_README.md`.
 - Root `openapi.yaml`.
-- Generated runtime OpenAPI available at `/v1/openapi.json`.
+- Static OpenAPI contract served at `/v1/openapi.json`.
 - Local fixtures.
 - Example curl/API usage documented.
 - Project structure documented.
 - Architecture and workflow documented.
+- Expanded verification commands documented.
+
+---
+
+## Latest local verification evidence
+
+The expanded smoke suite verifies:
+
+```text
+health
+static OpenAPI contract serving
+auth failures
+validation failures
+missing Idempotency-Key
+JSON ingest
+ingest polling
+unknown job
+cross-tenant job isolation
+idempotency replay
+idempotency conflict
+same idempotency key under different tenant
+unsupported MIME
+missing URL
+malformed JSON
+URL fetch failure job
+multipart upload
+multipart validation failures
+oversized upload 413
+exact article query
+semantic query
+retrieval-only mode
+top_k boundary
+uploaded-file retrieval
+no-answer behavior
+cross-tenant query isolation
+multi-namespace retrieval
+namespace stats
+missing namespace stats
+cross-tenant stats isolation
+source deletion
+namespace deletion
+post-delete verification
+```
+
+The latest full smoke run ended with:
+
+```text
+ALL ENDPOINT SMOKE TESTS PASSED
+```
+
+The OpenAPI comparison now shows:
+
+```text
+Only in generated:
+
+Only in openapi.yaml:
+
+compare_openapi_responses.py produces no output
+```
 
 ---
 
@@ -126,9 +232,10 @@ The following are intentionally not completed locally or remain planned improvem
 - Prometheus `/metrics` is not implemented yet.
 - OpenTelemetry instrumentation is not implemented yet.
 - Trivy/security scan output is not produced yet.
-- Final strict OpenAPI byte-level reconciliation may still be required before official handoff.
 - Official Bitbucket CI, Artifact Registry push, and deployment require CityDock infrastructure access.
 - Official acceptance/evaluation suite requires CityDock infrastructure access.
+- Official Schemathesis/property-based contract suite requires CityDock or reviewer-side execution.
+- Official performance/load testing requires target infrastructure.
 
 ---
 
@@ -156,11 +263,10 @@ For local development, `docker-compose.local.yml` includes both the API service 
 
 ## OpenAPI status
 
-- `openapi.yaml` is present in the repository root.
-- `GET /v1/openapi.json` is served by the running FastAPI service.
-- `openapi.yaml` should represent the official/static contract source.
-- `/v1/openapi.json` represents the generated implementation schema.
-- Final strict schema reconciliation remains planned before official handoff.
+- `openapi.yaml` represents the official/static contract source.
+- `GET /v1/openapi.json` serves the same static contract as JSON.
+- Local path and response-code comparison between `/v1/openapi.json` and `openapi.yaml` has been verified.
+- `generated-openapi.local.json` remains a local debug artifact and should not be committed.
 
 ---
 
@@ -170,8 +276,11 @@ Before sending the repository for review, run:
 
 ```powershell
 pytest
-python smoke_endpoints.py
+python smoke_endpoints.py --include-large-upload
+python compare_openapi_paths.py
+python compare_openapi_responses.py
 docker compose -f docker-compose.service.yml config
+git status
 ```
 
 For Docker Compose verification:
@@ -190,6 +299,26 @@ Expected smoke test result:
 
 ```text
 ALL ENDPOINT SMOKE TESTS PASSED
+```
+
+Do not commit:
+
+```text
+.env
+.venv/
+data/app.db
+.pytest_cache/
+generated-openapi.local.json
+compare_openapi_paths.py
+compare_openapi_responses.py
+smoke-output*.txt
+```
+
+Allowed:
+
+```text
+.env.example
+data/.gitkeep
 ```
 
 ---

@@ -14,6 +14,7 @@ It covers:
 - ingest flow;
 - URL ingest flow;
 - multipart file ingest flow;
+- oversized upload behavior;
 - document extraction;
 - legal chunking;
 - embeddings;
@@ -22,8 +23,9 @@ It covers:
 - deterministic answer generation;
 - error handling;
 - tenant isolation;
+- static OpenAPI contract serving;
 - Docker/Compose behavior;
-- testing strategy;
+- expanded smoke testing strategy;
 - current limitations and extension points.
 
 ---
@@ -36,13 +38,16 @@ The service can:
 
 1. receive legal source documents;
 2. extract text from supported inputs;
-3. split the legal text into meaningful legal chunks;
-4. generate embeddings locally;
-5. store chunks in SQLite;
-6. store vectors in Qdrant;
-7. retrieve relevant chunks for a user question;
-8. generate a grounded answer using retrieved citations;
-9. avoid hallucinated answers when no relevant context exists.
+3. reject invalid or oversized inputs with contract-aligned error responses;
+4. split legal text into meaningful legal chunks;
+5. generate embeddings locally;
+6. store chunks in SQLite;
+7. store vectors in Qdrant;
+8. retrieve relevant chunks for a user question;
+9. generate a grounded answer using retrieved citations;
+10. avoid hallucinated answers when no relevant context exists;
+11. delete source/namespace data and cleanup Qdrant vectors;
+12. serve the static OpenAPI contract at runtime.
 
 The current implementation does **not** use an external LLM by default. Answers are deterministic and citation-based.
 
@@ -76,6 +81,7 @@ FastAPI application
   |      - /v1/namespaces/{namespace_id}/sources/{source_id}
   |      - /v1/namespaces/{namespace_id}
   |      - /v1/openapi.json
+  |        - serves root openapi.yaml as static JSON contract
   |
   +--> Services
          |
@@ -103,58 +109,7 @@ Qdrant
 
 ---
 
-## 3. Project structure
-
-```text
-citydock-rag-service/
-├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── models.py
-│   ├── errors.py
-│   ├── auth.py
-│   ├── routes/
-│   │   ├── health.py
-│   │   ├── ingest.py
-│   │   ├── query.py
-│   │   ├── namespaces.py
-│   │   └── openapi.py
-│   └── services/
-│       ├── answer_service.py
-│       ├── document_extractor.py
-│       ├── embedding_service.py
-│       ├── ingest_service.py
-│       ├── legal_chunker.py
-│       ├── namespace_service.py
-│       ├── retrieval_service.py
-│       ├── sqlite_store.py
-│       ├── store.py
-│       ├── url_fetcher.py
-│       └── vector_store.py
-├── data/
-│   └── .gitkeep
-├── docs/
-├── examples/
-├── fixtures/
-├── scripts/
-├── tests/
-├── .env.example
-├── .gitignore
-├── DELIVERY_NOTES.md
-├── Dockerfile
-├── README.md
-├── docker-compose.local.yml
-├── docker-compose.service.yml
-├── openapi.yaml
-├── pytest.ini
-├── requirements.txt
-├── requirements-dev.txt
-└── smoke_endpoints.py
-```
-
----
-
-## 4. Runtime configuration
+## 3. Runtime configuration
 
 Configuration is loaded from environment variables through `app/config.py`.
 
@@ -179,36 +134,27 @@ URL_FETCH_TIMEOUT_SECONDS=60
 LLM_PROVIDER=none
 ```
 
-### Local execution
-
-When running Python directly on the host:
+Local host execution:
 
 ```env
 QDRANT_URL=http://localhost:6333
 DATABASE_PATH=./data/app.db
 ```
 
-### Docker Compose execution
-
-When running API inside Docker Compose:
+Docker Compose execution:
 
 ```env
 QDRANT_URL=http://qdrant:6333
 DATABASE_PATH=/app/data/app.db
 ```
 
-Reason:
-
-- from the host, Qdrant is reachable through `localhost`;
-- from the API container, Qdrant is reachable by Docker service name `qdrant`.
-
 ---
 
-## 5. Application startup
+## 4. Application startup
 
 The FastAPI application is created in `app/main.py`.
 
-Typical startup responsibilities:
+Startup responsibilities:
 
 ```text
 create FastAPI app
@@ -218,9 +164,7 @@ create FastAPI app
 → initialize SQLite database
 ```
 
-### Middleware behavior
-
-The response header middleware performs:
+Middleware behavior:
 
 ```text
 incoming request
@@ -231,7 +175,7 @@ incoming request
 → add response headers
 ```
 
-Response headers added:
+Response headers:
 
 ```text
 X-Request-ID
@@ -239,24 +183,15 @@ X-Vendor-Trace-ID
 Server-Timing
 ```
 
-For query responses, the query route additionally adds:
+Query responses additionally include:
 
 ```text
 X-Vendor-Retrieval-Strategy
 ```
 
-Example:
-
-```text
-X-Request-ID: 11111111-1111-4111-8111-111111111111
-X-Vendor-Trace-ID: tr_ddeea83d9b8843f28a2f35fa322fba2f
-X-Vendor-Retrieval-Strategy: hybrid_qdrant_article_keyword
-Server-Timing: app;dur=21.34
-```
-
 ---
 
-## 6. Authentication and request context
+## 5. Authentication and request context
 
 Implemented in `app/auth.py`.
 
@@ -268,7 +203,7 @@ X-Request-ID: <uuid>
 X-Tenant-ID: <tenant-id>
 ```
 
-The auth dependency returns an internal context object similar to:
+The auth dependency returns an internal context similar to:
 
 ```python
 AuthContext(
@@ -279,9 +214,7 @@ AuthContext(
 
 This context is passed to service functions so all data access is tenant-scoped.
 
-### Why tenant scoping matters
-
-Every persisted object is associated with a tenant:
+Tenant isolation applies to:
 
 ```text
 job
@@ -292,27 +225,24 @@ vector point
 namespace stats
 ```
 
-Vector search also filters by tenant:
+Qdrant search also filters by:
 
 ```text
 tenant_id == X-Tenant-ID
+namespace_id in request.namespaces
 ```
-
-This prevents a user from retrieving another tenant's data.
 
 ---
 
-## 7. API endpoint overview
+## 6. API endpoint overview
 
-### Public endpoint
+Public endpoint:
 
 ```text
 GET /v1/health
 ```
 
-No authentication required.
-
-### Authenticated endpoints
+Authenticated endpoints:
 
 ```text
 POST   /v1/ingest
@@ -321,35 +251,29 @@ POST   /v1/query
 GET    /v1/namespaces/{namespace_id}/stats
 DELETE /v1/namespaces/{namespace_id}/sources/{source_id}
 DELETE /v1/namespaces/{namespace_id}
-GET    /v1/openapi.json
+```
+
+Static contract endpoint:
+
+```text
+GET /v1/openapi.json
 ```
 
 ---
 
-## 8. Health endpoint
+## 7. Health endpoint
 
-### Endpoint
+Function chain:
 
 ```text
 GET /v1/health
-```
-
-### Function chain
-
-```text
-routes/health.py
+→ routes/health.py
 → health route handler
 → checks configured dependency status
 → returns HealthResponse
 ```
 
-### Example request
-
-```powershell
-curl.exe http://localhost:8080/v1/health
-```
-
-### Example response
+Example response:
 
 ```json
 {
@@ -364,23 +288,17 @@ curl.exe http://localhost:8080/v1/health
 }
 ```
 
-### Notes
-
-- `vector_store` should be `ok` when Qdrant is reachable.
-- `llm` is `ok` because the default provider is `none`; no external LLM is required.
-- `object_store` is `ok` as a local MVP placeholder.
-
 ---
 
-## 9. Ingest endpoint
+## 8. Ingest endpoint
 
-### Endpoint
+Endpoint:
 
 ```text
 POST /v1/ingest
 ```
 
-### Supported content types
+Supported content types:
 
 ```text
 application/json
@@ -388,7 +306,7 @@ multipart/form-data
 application/x-www-form-urlencoded for validation fallback
 ```
 
-### Required headers
+Required headers:
 
 ```text
 Authorization: Bearer test-api-key
@@ -399,14 +317,14 @@ Idempotency-Key: <uuid>
 
 ---
 
-## 10. JSON ingest flow
+## 9. JSON ingest flow
 
 JSON ingest supports:
 
 1. inline deterministic fixture text through `metadata.text`;
 2. URL fetching if `metadata.text` is absent and `source_type=url`.
 
-### Function chain
+Function chain:
 
 ```text
 POST /v1/ingest
@@ -430,60 +348,19 @@ POST /v1/ingest
 → returns IngestAcceptedResponse
 ```
 
-### Request with `metadata.text`
-
-```json
-{
-  "namespace_id": "legea_31_1990",
-  "source_id": "s_47381",
-  "source_type": "url",
-  "url": "https://legislatie.just.ro/Public/DetaliiDocument/47381",
-  "mime_type_hint": "text/plain",
-  "metadata": {
-    "source_title": "Legea 31/1990 privind societățile comerciale",
-    "text": "Articolul 15. Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate."
-  }
-}
-```
-
-### Curl request
-
-```powershell
-curl.exe -X POST http://localhost:8080/v1/ingest `
-  -H "Authorization: Bearer test-api-key" `
-  -H "Content-Type: application/json" `
-  -H "X-Request-ID: 22222222-2222-4222-8222-222222222222" `
-  -H "X-Tenant-ID: ph-balta-doamnei" `
-  -H "Idempotency-Key: 99999999-9999-4999-8999-999999999999" `
-  --data-binary "@examples/ingest.json"
-```
-
-### Response
-
-```json
-{
-  "job_id": "j_3f7a883ddd44",
-  "status": "queued",
-  "submitted_at": "2026-04-26T18:20:36Z",
-  "estimated_completion_at": "2026-04-26T18:25:36Z"
-}
-```
-
-### Important behavior
-
-The API returns `queued` for contract compatibility, but the MVP processes synchronously. Polling the returned job should show `done`.
+The API returns `queued` for contract compatibility, but the local MVP processes synchronously. Polling the returned job should show `done`.
 
 ---
 
-## 11. Ingest job polling
+## 10. Ingest job polling
 
-### Endpoint
+Endpoint:
 
 ```text
 GET /v1/ingest/{job_id}
 ```
 
-### Function chain
+Function chain:
 
 ```text
 GET /v1/ingest/{job_id}
@@ -493,16 +370,7 @@ GET /v1/ingest/{job_id}
 → returns IngestJobStatus
 ```
 
-### Curl request
-
-```powershell
-curl.exe -X GET http://localhost:8080/v1/ingest/j_3f7a883ddd44 `
-  -H "Authorization: Bearer test-api-key" `
-  -H "X-Request-ID: 33333333-3333-4333-8333-333333333333" `
-  -H "X-Tenant-ID: ph-balta-doamnei"
-```
-
-### Response when complete
+Done response:
 
 ```json
 {
@@ -521,7 +389,7 @@ curl.exe -X GET http://localhost:8080/v1/ingest/j_3f7a883ddd44 `
 }
 ```
 
-### Response when failed
+Failed response:
 
 ```json
 {
@@ -537,19 +405,19 @@ curl.exe -X GET http://localhost:8080/v1/ingest/j_3f7a883ddd44 `
   "submitted_at": "2026-04-26T18:20:36Z",
   "completed_at": "2026-04-26T18:20:37Z",
   "error": {
-    "code": "INGEST_FAILED",
-    "message": "Unsupported MIME type: application/json"
+    "code": "ingest_failed",
+    "message": "URL fetch failed."
   }
 }
 ```
 
 ---
 
-## 12. Idempotency behavior
+## 11. Idempotency behavior
 
 Idempotency is tenant-scoped.
 
-### Function chain
+Function chain:
 
 ```text
 create_ingest_job()
@@ -563,18 +431,12 @@ create_ingest_job()
     |      return existing job response
     |
     +--> different body hash:
-           raise 409 duplicate/idempotency error
+           raise 409 duplicate_job
 ```
 
-### Same key + same body
+Same key + same body returns the existing job metadata.
 
-Returns the same job metadata.
-
-### Same key + different body
-
-Returns an error response.
-
-Example:
+Same key + different body returns:
 
 ```json
 {
@@ -582,14 +444,16 @@ Example:
     "code": "duplicate_job",
     "message": "Idempotency-Key reused with different body.",
     "request_id": "11111111-1111-4111-8111-111111111111",
-    "details": null
+    "details": {}
   }
 }
 ```
 
+Same key under a different tenant is accepted because idempotency is tenant-scoped.
+
 ---
 
-## 13. URL ingest
+## 12. URL ingest
 
 URL ingest is used when:
 
@@ -599,7 +463,7 @@ metadata.text is absent
 url is present
 ```
 
-### Function chain
+Function chain:
 
 ```text
 _process_ingest_synchronously()
@@ -614,7 +478,7 @@ _process_ingest_synchronously()
 → indexing
 ```
 
-### Supported MIME types
+Supported MIME types:
 
 ```text
 text/plain
@@ -623,79 +487,39 @@ text/html
 application/pdf
 ```
 
-### Example request
+URL fetch failures are represented as failed jobs:
 
 ```json
 {
-  "namespace_id": "url_demo_namespace",
-  "source_id": "url_demo_source",
-  "source_type": "url",
-  "url": "https://example.com/legal.txt",
-  "mime_type_hint": "text/plain",
-  "metadata": {
-    "source_title": "Fetched Legal Text"
+  "status": "failed",
+  "error": {
+    "code": "ingest_failed",
+    "message": "URL fetch failed."
   }
 }
 ```
 
-### Curl
-
-```powershell
-curl.exe -X POST http://localhost:8080/v1/ingest `
-  -H "Authorization: Bearer test-api-key" `
-  -H "Content-Type: application/json" `
-  -H "X-Request-ID: 66666666-6666-4666-8666-666666666666" `
-  -H "X-Tenant-ID: ph-balta-doamnei" `
-  -H "Idempotency-Key: 66666666-6666-4666-8666-666666666667" `
-  --data-binary "@examples/ingest_url.json"
-```
-
-### Internal URL fetch response object
-
-`fetch_url_document()` returns an object like:
-
-```python
-FetchedUrlDocument(
-    url="https://example.com/legal.txt",
-    status_code=200,
-    extracted=ExtractedDocument(
-        text="Articolul 15. ...",
-        mime_type="text/plain",
-        metadata={"original_size_bytes": 123}
-    ),
-    headers={...},
-    metadata={
-        "fetched_url": "https://example.com/legal.txt",
-        "http_status_code": 200,
-        "content_type": "text/plain; charset=utf-8",
-        "effective_mime_type": "text/plain"
-    }
-)
-```
-
-This metadata is copied into chunk metadata.
-
 ---
 
-## 14. Multipart file ingest
+## 13. Multipart file ingest
 
 Multipart ingest is used for direct uploaded documents.
 
-### Endpoint
+Endpoint:
 
 ```text
 POST /v1/ingest
 Content-Type: multipart/form-data
 ```
 
-### Form parts
+Form parts:
 
 ```text
 payload: JSON string
 file: binary uploaded document
 ```
 
-### Function chain
+Function chain:
 
 ```text
 routes/ingest.py::post_ingest()
@@ -705,6 +529,7 @@ routes/ingest.py::post_ingest()
 → read form["file"]
 → IngestRequest.model_validate(payload)
 → uploaded_file.read()
+→ reject oversized files with HTTP 413 payload_too_large
 → compute uploaded_file_sha256
 → attach file metadata
 → create_ingest_job(... file_content, file_mime_type, filename)
@@ -716,53 +541,7 @@ routes/ingest.py::post_ingest()
 → Qdrant indexing
 ```
 
-### Payload example
-
-`examples/file_payload.json`:
-
-```json
-{
-  "namespace_id": "uploaded_legea_31",
-  "source_id": "uploaded_s_001",
-  "source_type": "file",
-  "mime_type_hint": "text/plain",
-  "metadata": {
-    "source_title": "Uploaded Legal Text"
-  }
-}
-```
-
-`examples/legea_31.txt`:
-
-```text
-Articolul 15.
-Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate.
-```
-
-### Curl
-
-```powershell
-curl.exe -X POST http://localhost:8080/v1/ingest `
-  -H "Authorization: Bearer test-api-key" `
-  -H "X-Request-ID: 77777777-7777-4777-8777-777777777777" `
-  -H "X-Tenant-ID: ph-balta-doamnei" `
-  -H "Idempotency-Key: 77777777-7777-4777-8777-777777777778" `
-  -F "payload=<examples/file_payload.json;type=application/json" `
-  -F "file=@examples/legea_31.txt;type=text/plain"
-```
-
-### Expected response
-
-```json
-{
-  "job_id": "j_...",
-  "status": "queued",
-  "submitted_at": "...",
-  "estimated_completion_at": "..."
-}
-```
-
-### Uploaded file metadata stored
+Uploaded file metadata stored:
 
 ```json
 {
@@ -774,9 +553,18 @@ curl.exe -X POST http://localhost:8080/v1/ingest `
 }
 ```
 
+Multipart validation errors:
+
+```text
+missing payload → 422 validation_error
+missing file → 422 validation_error
+invalid payload JSON → 422 validation_error
+oversized file → 413 payload_too_large
+```
+
 ---
 
-## 15. Document extraction
+## 14. Document extraction
 
 Implemented in:
 
@@ -784,7 +572,7 @@ Implemented in:
 app/services/document_extractor.py
 ```
 
-### Main function
+Main function:
 
 ```python
 extract_document_text(
@@ -793,7 +581,7 @@ extract_document_text(
 ) -> ExtractedDocument
 ```
 
-### Function chain
+Function chain:
 
 ```text
 extract_document_text()
@@ -809,62 +597,40 @@ extract_document_text()
 → return ExtractedDocument
 ```
 
-### Response object
+Oversized upload response:
 
-```python
-ExtractedDocument(
-    text="Articolul 15. ...",
-    mime_type="text/plain",
-    metadata={
-        "original_size_bytes": 123
+```json
+{
+  "error": {
+    "code": "payload_too_large",
+    "message": "Uploaded file exceeds maximum allowed size of 50 MiB.",
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "details": {
+      "max_size_bytes": 52428800,
+      "actual_size_bytes": 52428801
     }
-)
+  }
+}
 ```
 
-For PDFs:
+Unsupported MIME response:
 
-```python
-ExtractedDocument(
-    text="[Page 1]\nArticolul 15. ...",
-    mime_type="application/pdf",
-    metadata={
-        "original_size_bytes": 100000,
-        "page_count": 4
+```json
+{
+  "error": {
+    "code": "unsupported_media_type",
+    "message": "Unsupported MIME type: application/json",
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "details": {
+      "mime_type": "application/json"
     }
-)
+  }
+}
 ```
-
-### HTML extraction behavior
-
-The HTML extractor removes:
-
-```text
-script
-style
-noscript
-template
-svg
-canvas
-nav
-footer
-header
-```
-
-Then it extracts visible text with line separators.
-
-### Unsupported MIME example
-
-If the MIME is `application/json`, extraction raises:
-
-```python
-DocumentExtractionError("Unsupported MIME type: application/json")
-```
-
-The ingest job becomes `failed`.
 
 ---
 
-## 16. Legal chunking
+## 15. Legal chunking
 
 Implemented in:
 
@@ -872,13 +638,13 @@ Implemented in:
 app/services/legal_chunker.py
 ```
 
-### Main function
+Main function:
 
 ```python
 chunk_legal_text(text: str) -> list[LegalChunk]
 ```
 
-### Supported legal structures
+Supported legal structures:
 
 ```text
 Articolul 15.
@@ -893,9 +659,7 @@ a)
 b)
 ```
 
-### Output chunk object
-
-A chunk contains:
+Output chunk example:
 
 ```python
 LegalChunk(
@@ -914,21 +678,11 @@ LegalChunk(
 )
 ```
 
-### Why article-aware chunking is important
-
-Legal questions often refer to article numbers:
-
-```text
-Ce spune articolul 15?
-```
-
-If chunking loses article numbers, retrieval becomes unreliable.
-
-The chunker preserves article metadata so retrieval can boost exact matches.
+Article-aware chunking is important because legal questions often reference exact article numbers.
 
 ---
 
-## 17. Embedding generation
+## 16. Embedding generation
 
 Implemented in:
 
@@ -936,15 +690,14 @@ Implemented in:
 app/services/embedding_service.py
 ```
 
-### Main functions
+Main functions:
 
 ```python
 embed_text(text: str) -> list[float]
-
 embed_texts(texts: list[str]) -> list[list[float]]
 ```
 
-### Function chain
+Function chain:
 
 ```text
 embed_texts()
@@ -954,32 +707,23 @@ embed_texts()
 → convert vectors to list[float]
 ```
 
-### Default model
+Default model:
 
 ```text
 paraphrase-multilingual-MiniLM-L12-v2
 ```
 
-### Embedding dimension
+Embedding dimension:
 
 ```text
 384
 ```
 
-### Why local embeddings are used
-
 Local embeddings avoid sending Romanian legal documents and user questions to third-party embedding APIs.
-
-Tradeoff:
-
-```text
-better privacy and data locality
-but larger Docker image due to sentence-transformers / PyTorch
-```
 
 ---
 
-## 18. Qdrant vector store
+## 17. Qdrant vector store
 
 Implemented in:
 
@@ -987,7 +731,7 @@ Implemented in:
 app/services/vector_store.py
 ```
 
-### Main responsibilities
+Main responsibilities:
 
 ```text
 create collection
@@ -997,15 +741,13 @@ delete by source
 delete by namespace
 ```
 
-### Collection
-
-Default collection:
+Collection:
 
 ```text
 rag_chunks
 ```
 
-### Vector upsert chain
+Vector upsert chain:
 
 ```text
 _index_chunks_in_vector_store()
@@ -1015,9 +757,7 @@ _index_chunks_in_vector_store()
 → Qdrant upsert(points)
 ```
 
-### Point payload
-
-Each vector point includes payload:
+Point payload:
 
 ```json
 {
@@ -1032,42 +772,21 @@ Each vector point includes payload:
 }
 ```
 
-### Vector search chain
+Vector search chain:
 
 ```text
 retrieval_service.retrieve_chunks()
 → embed_text(question)
-→ vector_store.search_chunks(
-      tenant_id,
-      namespaces,
-      query_vector,
-      limit
-  )
+→ vector_store.search_chunks(tenant_id, namespaces, query_vector, limit)
 → Qdrant search with filters:
       tenant_id == request tenant
       namespace_id in request namespaces
 → convert results to chunk dicts
 ```
 
-### Tenant isolation in Qdrant
-
-Qdrant search always applies tenant filter:
-
-```text
-tenant_id == X-Tenant-ID
-```
-
-and namespace filter:
-
-```text
-namespace_id in request.namespaces
-```
-
-This prevents cross-tenant vector leakage.
-
 ---
 
-## 19. Hybrid retrieval
+## 18. Hybrid retrieval
 
 Implemented in:
 
@@ -1075,7 +794,7 @@ Implemented in:
 app/services/retrieval_service.py
 ```
 
-### Main function
+Main function:
 
 ```python
 retrieve_chunks(
@@ -1087,7 +806,7 @@ retrieve_chunks(
 ) -> list[dict]
 ```
 
-### Retrieval chain
+Retrieval chain:
 
 ```text
 retrieve_chunks()
@@ -1107,49 +826,26 @@ retrieve_chunks()
 → return top_k chunks
 ```
 
-### Retrieval strategy response value
-
-When Qdrant is active:
+Retrieval strategy values:
 
 ```text
 hybrid_qdrant_article_keyword
-```
-
-When fallback lexical mode is active:
-
-```text
 article_keyword_mvp
 ```
 
-### Exact article boost
-
-If request has:
-
-```json
-"hint_article_number": "15"
-```
-
-then chunks with:
-
-```json
-"article_number": "15"
-```
-
-receive priority.
-
-This matters because legal references must be exact.
+Exact article hints prioritize chunks with matching `article_number`.
 
 ---
 
-## 20. Query endpoint
+## 19. Query endpoint
 
-### Endpoint
+Endpoint:
 
 ```text
 POST /v1/query
 ```
 
-### Function chain
+Function chain:
 
 ```text
 routes/query.py::post_query()
@@ -1161,7 +857,7 @@ routes/query.py::post_query()
 → return response
 ```
 
-### Request
+Request:
 
 ```json
 {
@@ -1175,35 +871,20 @@ routes/query.py::post_query()
 }
 ```
 
-### Curl
-
-```powershell
-curl.exe -X POST http://localhost:8080/v1/query `
-  -H "Authorization: Bearer test-api-key" `
-  -H "Content-Type: application/json" `
-  -H "X-Request-ID: 11111111-1111-4111-8111-111111111111" `
-  -H "X-Tenant-ID: ph-balta-doamnei" `
-  --data-binary "@examples/query.json"
-```
-
-### Response
+Response shape:
 
 ```json
 {
   "request_id": "11111111-1111-4111-8111-111111111111",
-  "answer": "Articolul 15 prevede următoarele: Articolul 15. Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate. [1].",
+  "answer": "Articolul 15 prevede următoarele: ... [1].",
   "citations": [
     {
       "marker": "[1]",
       "chunk": {
-        "chunk_id": "6ffc18dc-153e-485a-9573-9471d4c4a1e5",
-        "content": "Articolul 15. Aporturile în numerar sunt obligatorii la constituirea oricărei forme de societate.",
+        "chunk_id": "...",
+        "content": "Articolul 15. ...",
         "article_number": "15",
-        "section_title": null,
-        "point_number": null,
-        "page_number": null,
         "source_id": "s_47381",
-        "source_url": "https://legislatie.just.ro/Public/DetaliiDocument/47381",
         "source_title": "Legea 31/1990 privind societățile comerciale",
         "namespace_id": "legea_31_1990",
         "score": 0.7,
@@ -1227,7 +908,7 @@ curl.exe -X POST http://localhost:8080/v1/query `
 
 ---
 
-## 21. Deterministic answer generation
+## 20. Deterministic answer generation
 
 Implemented in:
 
@@ -1235,18 +916,7 @@ Implemented in:
 app/services/answer_service.py
 ```
 
-### Main function
-
-```python
-build_answer_response(
-    include_answer: bool,
-    question: str,
-    chunks: list[dict],
-    style_hints: Any | None,
-) -> tuple[str | None, list[dict], float]
-```
-
-### Function behavior
+Function behavior:
 
 ```text
 if chunks empty:
@@ -1260,17 +930,11 @@ else:
     confidence = top chunk score
 ```
 
-### Why deterministic answers
-
-The legal domain requires grounded responses.
-
-The deterministic answer service only uses retrieved chunk content and citation markers.
-
-This reduces hallucination risk compared to an unconstrained LLM response.
+The deterministic answer service only uses retrieved chunk content and citation markers. This reduces hallucination risk.
 
 ---
 
-## 22. No-answer behavior
+## 21. No-answer behavior
 
 If retrieval finds no relevant chunks, response is:
 
@@ -1284,44 +948,27 @@ If retrieval finds no relevant chunks, response is:
 
 This is the intended anti-hallucination behavior.
 
-Example use case:
-
-```text
-Question: Care este programul primăriei Bălta Doamnei?
-Namespace: legea_31_1990
-```
-
-The legal namespace does not contain town hall schedule data, so the service should not invent an answer.
-
 ---
 
-## 23. Namespace stats endpoint
+## 22. Namespace stats endpoint
 
-### Endpoint
+Endpoint:
 
 ```text
 GET /v1/namespaces/{namespace_id}/stats
 ```
 
-### Function chain
+Function chain:
 
 ```text
 routes/namespaces.py
-→ namespace_service.get_namespace_stats()
-→ sqlite_store.get_namespace_stats()
-→ return NamespaceStatsResponse
+→ namespace_service.get_namespace_stats_data()
+→ sqlite_store.namespace_exists()
+→ sqlite_store.get_ns_stats()
+→ return NamespaceStats
 ```
 
-### Curl
-
-```powershell
-curl.exe -X GET http://localhost:8080/v1/namespaces/legea_31_1990/stats `
-  -H "Authorization: Bearer test-api-key" `
-  -H "X-Request-ID: 99999999-9999-4999-8999-999999999999" `
-  -H "X-Tenant-ID: ph-balta-doamnei"
-```
-
-### Response
+Response:
 
 ```json
 {
@@ -1337,40 +984,31 @@ curl.exe -X GET http://localhost:8080/v1/namespaces/legea_31_1990/stats `
 
 ---
 
-## 24. Source deletion
+## 23. Source deletion
 
-### Endpoint
+Endpoint:
 
 ```text
 DELETE /v1/namespaces/{namespace_id}/sources/{source_id}
 ```
 
-### Function chain
+Function chain:
 
 ```text
 routes/namespaces.py
-→ namespace_service.delete_source()
+→ namespace_service.delete_source_data()
+→ sqlite_store.source_exists()
 → sqlite_store.delete_source()
 → vector_store.delete_source()
 → return 204
 ```
 
-### Qdrant deletion filter
+Qdrant deletion filter:
 
 ```text
 tenant_id == tenant
 namespace_id == namespace_id
 source_id == source_id
-```
-
-### Curl
-
-```powershell
-curl.exe -X DELETE http://localhost:8080/v1/namespaces/legea_31_1990/sources/s_47381 `
-  -H "Authorization: Bearer test-api-key" `
-  -H "X-Request-ID: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" `
-  -H "X-Tenant-ID: ph-balta-doamnei" `
-  -i
 ```
 
 Expected:
@@ -1383,62 +1021,54 @@ After deletion, querying the same namespace/source content should return no answ
 
 ---
 
-## 25. Namespace deletion
+## 24. Namespace deletion
 
-### Endpoint
+Endpoint:
 
 ```text
 DELETE /v1/namespaces/{namespace_id}
 ```
 
-### Function chain
+Function chain:
 
 ```text
 routes/namespaces.py
-→ namespace_service.delete_namespace()
+→ namespace_service.delete_namespace_data()
+→ sqlite_store.namespace_exists()
 → sqlite_store.delete_namespace()
 → vector_store.delete_namespace()
-→ return deletion response
+→ return contract-aligned deletion acknowledgement
 ```
 
-### Qdrant deletion filter
+Qdrant deletion filter:
 
 ```text
 tenant_id == tenant
 namespace_id == namespace_id
 ```
 
-### Curl
-
-```powershell
-curl.exe -X DELETE http://localhost:8080/v1/namespaces/legea_31_1990 `
-  -H "Authorization: Bearer test-api-key" `
-  -H "X-Request-ID: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" `
-  -H "X-Tenant-ID: ph-balta-doamnei"
-```
-
-### Response shape
+Response shape:
 
 ```json
 {
-  "job_id": "j_...",
-  "status": "done",
-  "namespace_id": "legea_31_1990"
+  "job_id": "del_...",
+  "status": "queued",
+  "sla": "24h"
 }
 ```
 
+Local deletion is executed immediately, but the public response follows the contract's asynchronous deletion acknowledgement.
+
 ---
 
-## 26. Error responses
+## 25. Error responses
 
-### Validation error envelope
-
-FastAPI validation errors are wrapped into:
+Validation error envelope:
 
 ```json
 {
   "error": {
-    "code": "VALIDATION_ERROR",
+    "code": "validation_error",
     "message": "Request validation failed.",
     "request_id": "11111111-1111-4111-8111-111111111111",
     "details": {
@@ -1454,14 +1084,12 @@ FastAPI validation errors are wrapped into:
 }
 ```
 
-### Multipart validation error
-
-Missing `file`:
+Multipart missing file:
 
 ```json
 {
   "error": {
-    "code": "VALIDATION_ERROR",
+    "code": "validation_error",
     "message": "Multipart field 'file' is required.",
     "request_id": "11111111-1111-4111-8111-111111111111",
     "details": {
@@ -1476,7 +1104,7 @@ Missing `file`:
 }
 ```
 
-### Unsupported MIME
+Unsupported MIME:
 
 ```json
 {
@@ -1491,9 +1119,25 @@ Missing `file`:
 }
 ```
 
+Oversized file:
+
+```json
+{
+  "error": {
+    "code": "payload_too_large",
+    "message": "Uploaded file exceeds maximum allowed size of 50 MiB.",
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "details": {
+      "max_size_bytes": 52428800,
+      "actual_size_bytes": 52428801
+    }
+  }
+}
+```
+
 ---
 
-## 27. OpenAPI
+## 26. Static OpenAPI contract serving
 
 Static contract file:
 
@@ -1501,11 +1145,22 @@ Static contract file:
 openapi.yaml
 ```
 
-Runtime schema:
+Runtime schema endpoint:
 
 ```text
 GET /v1/openapi.json
 ```
+
+Implementation:
+
+```text
+app/routes/openapi.py
+→ loads root openapi.yaml with PyYAML
+→ returns it as JSON
+→ include_in_schema=False
+```
+
+This means `openapi.yaml` remains the source of truth, while `/v1/openapi.json` exposes the same contract to automated validators.
 
 Generate snapshot:
 
@@ -1513,39 +1168,53 @@ Generate snapshot:
 curl.exe http://localhost:8080/v1/openapi.json -o generated-openapi.local.json
 ```
 
-This generated file is a local debug artifact and should not be committed.
+Compare paths and response codes:
+
+```powershell
+python compare_openapi_paths.py
+python compare_openapi_responses.py
+```
+
+Expected after alignment:
+
+```text
+Only in generated:
+
+Only in openapi.yaml:
+
+compare_openapi_responses.py produces no output
+```
+
+The generated file and comparison helper scripts are local debug artifacts and should not be committed.
 
 ---
 
-## 28. Dockerfile behavior
+## 27. Dockerfile behavior
 
-The Dockerfile uses a multi-stage build.
+The Dockerfile uses a multi-stage build and a pinned Python base image digest.
 
-### Builder stage
+Builder stage:
 
 ```text
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:<digest> AS builder
 → copy requirements.txt
 → build wheels
 ```
 
-### Runtime stage
+Runtime stage:
 
 ```text
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:<digest> AS runtime
 → create non-root appuser
 → install wheels
 → copy app
+→ copy openapi.yaml
 → expose 8080
 → healthcheck /v1/health
 → run uvicorn
 ```
 
-### CPU-only torch
-
-The requirements pin CPU-only PyTorch so CUDA/NVIDIA packages are not pulled.
-
-Expected check:
+CPU-only torch check:
 
 ```powershell
 docker run --rm citydock-rag-mvp:cpu python -c "import torch; print(torch.cuda.is_available())"
@@ -1557,44 +1226,25 @@ Expected:
 False
 ```
 
+Non-root user check:
+
+```powershell
+docker run --rm citydock-rag-mvp:cpu id
+```
+
+Expected:
+
+```text
+uid=1000(appuser)
+```
+
 ---
 
-## 29. Docker Compose files
+## 28. Docker Compose files
 
-### docker-compose.local.yml
+`docker-compose.local.yml` is for development and includes API + Qdrant.
 
-Used for local development.
-
-Usually includes:
-
-```text
-rag-service
-qdrant
-```
-
-The API is accessible at:
-
-```text
-http://localhost:8080
-```
-
-Qdrant is accessible from host at:
-
-```text
-http://localhost:6333
-```
-
-Inside the API container:
-
-```text
-http://qdrant:6333
-```
-
-### docker-compose.service.yml
-
-Deployment fragment for the target stack.
-
-It defines the RAG API service only and joins external network:
+`docker-compose.service.yml` is a deployment fragment for the target stack. It defines the RAG API service only and joins external network:
 
 ```text
 lex-advisor
@@ -1610,7 +1260,7 @@ docker compose -f docker-compose.service.yml config
 
 ---
 
-## 30. Testing strategy
+## 29. Testing strategy
 
 The project contains automated tests for:
 
@@ -1622,6 +1272,7 @@ response headers
 document extraction
 URL fetching
 multipart file upload
+oversized upload 413
 ingest
 idempotency
 ingest polling
@@ -1633,6 +1284,7 @@ tenant isolation
 namespace stats
 source deletion
 namespace deletion
+static OpenAPI serving
 no-hallucination behavior
 ```
 
@@ -1642,37 +1294,61 @@ Run all tests:
 pytest
 ```
 
-Run smoke tests:
+Run expanded smoke test:
 
 ```powershell
-python smoke_endpoints.py
+python smoke_endpoints.py --include-large-upload
 ```
 
-Run Docker smoke tests:
+Save smoke output:
 
 ```powershell
-docker compose -f docker-compose.local.yml up --build
-python smoke_endpoints.py http://localhost:8080 test-api-key docker-compose-test-tenant
+$env:PYTHONIOENCODING="utf-8"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+python smoke_endpoints.py --include-large-upload 2>&1 | Tee-Object -FilePath smoke-output-full.txt
 ```
 
 ---
 
-## 31. Smoke test script behavior
+## 30. Smoke test script behavior
 
-`smoke_endpoints.py` validates the main API behavior:
+`smoke_endpoints.py` validates the main API behavior and important edge cases:
 
 ```text
-1. GET /v1/health
-2. POST /v1/ingest
-3. GET /v1/ingest/{job_id}
-4. POST /v1/query for article 15
-5. POST /v1/query for article 16
-6. POST /v1/query empty/no-answer behavior
-7. GET namespace stats
-8. cross-tenant isolation
-9. DELETE source
-10. verify source deletion
-11. GET /v1/openapi.json
+health
+static OpenAPI contract serving
+auth failures
+validation failures
+missing Idempotency-Key
+JSON ingest
+ingest polling
+unknown job
+cross-tenant job isolation
+idempotency replay
+idempotency conflict
+same idempotency key under different tenant
+unsupported MIME
+missing URL
+malformed JSON
+URL fetch failure job
+multipart upload
+multipart validation failures
+oversized upload 413
+exact article query
+semantic query
+retrieval-only mode
+top_k boundary
+uploaded-file retrieval
+no-answer behavior
+cross-tenant query isolation
+multi-namespace retrieval
+namespace stats
+missing namespace stats
+cross-tenant stats isolation
+source deletion
+namespace deletion
+post-delete verification
+optional /metrics and /v1/eval probes
 ```
 
 Expected final output:
@@ -1683,7 +1359,7 @@ ALL ENDPOINT SMOKE TESTS PASSED
 
 ---
 
-## 32. External LLM extension point
+## 31. External LLM extension point
 
 External LLM generation is not active by default.
 
@@ -1693,7 +1369,7 @@ Current setting:
 LLM_PROVIDER=none
 ```
 
-### Current answer flow
+Current answer flow:
 
 ```text
 retrieved chunks
@@ -1701,7 +1377,7 @@ retrieved chunks
 → deterministic answer
 ```
 
-### Future LLM flow
+Future LLM flow:
 
 ```text
 retrieved chunks
@@ -1712,9 +1388,7 @@ retrieved chunks
 → fallback to deterministic answer on failure
 ```
 
-### Why default is no external LLM
-
-Reasons:
+Default no external LLM reasons:
 
 ```text
 legal data privacy
@@ -1726,7 +1400,7 @@ lower hallucination risk
 
 ---
 
-## 33. Data privacy and isolation
+## 32. Data privacy and isolation
 
 The current local implementation keeps:
 
@@ -1757,18 +1431,20 @@ Qdrant vector search filters
 
 ---
 
-## 34. Final local verification checklist
+## 33. Final local verification checklist
 
 Before sending repository for review:
 
 ```powershell
 pytest
-python smoke_endpoints.py
+python smoke_endpoints.py --include-large-upload
+python compare_openapi_paths.py
+python compare_openapi_responses.py
 docker compose -f docker-compose.service.yml config
 git status
 ```
 
-Check that these are not committed:
+Do not commit:
 
 ```text
 .env
@@ -1776,6 +1452,9 @@ Check that these are not committed:
 data/app.db
 .pytest_cache/
 generated-openapi.local.json
+compare_openapi_paths.py
+compare_openapi_responses.py
+smoke-output*.txt
 ```
 
 Allowed:
@@ -1794,7 +1473,7 @@ python smoke_endpoints.py http://localhost:8080 test-api-key docker-compose-test
 
 ---
 
-## 35. Current known limitations
+## 34. Current known limitations
 
 The following are not active locally:
 
@@ -1802,10 +1481,12 @@ The following are not active locally:
 external LLM generation
 Prometheus /metrics
 OpenTelemetry
+official Schemathesis / acceptance harness
 official Bitbucket CI
 official Artifact Registry push
 official deployment
 official evaluation suite
+official performance/load verification
 ```
 
 The service is ready for local functional review with the documented limitations.

@@ -6,18 +6,22 @@ The service implements local RAG behavior with:
 
 - authenticated `/v1` endpoints;
 - tenant isolation;
-- idempotent ingest;
-- URL and multipart file ingest;
+- tenant-scoped idempotent ingest;
+- JSON URL ingest;
+- multipart file ingest;
 - document extraction;
-- article-aware legal chunking;
+- article-aware Romanian legal chunking;
 - SQLite persistence;
 - Qdrant vector database;
 - local `sentence-transformers` embeddings;
 - hybrid retrieval;
 - citation-grounded deterministic answers;
 - no-hallucination fallback behavior;
+- contract-aligned lowercase error envelopes;
+- static OpenAPI contract serving at `/v1/openapi.json`;
 - Docker and Docker Compose support;
-- automated tests and endpoint smoke tests.
+- pinned Docker base image digest;
+- automated tests and expanded endpoint smoke tests.
 
 ---
 
@@ -26,11 +30,12 @@ The service implements local RAG behavior with:
 Implemented and verified locally:
 
 - FastAPI service.
-- `/v1` API endpoint surface.
+- `/v1` endpoint surface.
 - Bearer API-key validation.
-- `X-Request-ID` validation.
-- `X-Tenant-ID` tenant scoping.
-- Tenant-scoped idempotency through `Idempotency-Key`.
+- Required `X-Request-ID`.
+- Required `X-Tenant-ID`.
+- Tenant-scoped data isolation.
+- Tenant-scoped `Idempotency-Key` handling.
 - Persistent SQLite storage.
 - URL ingest.
 - Multipart file upload ingest.
@@ -39,6 +44,8 @@ Implemented and verified locally:
   - `text/markdown`;
   - `text/html`;
   - `application/pdf`.
+- Oversized multipart upload rejection with `413 payload_too_large`.
+- MIME validation with `415 unsupported_media_type`.
 - Romanian legal article-aware chunking.
 - Qdrant vector database.
 - Local embeddings with `sentence-transformers`.
@@ -50,23 +57,35 @@ Implemented and verified locally:
   - Romanian/diacritic normalization;
   - namespace diversity.
 - Citation-based deterministic answers.
-- No-answer fallback.
+- No-answer fallback:
+  - `answer: null`;
+  - `citations: []`;
+  - `confidence: 0.0`.
 - Namespace stats.
-- Source deletion.
-- Namespace deletion.
-- Standard validation error envelope.
-- Standard response headers.
-- Dockerfile.
+- Source deletion with `204 No Content`.
+- Namespace deletion with contract-aligned `202 Accepted`:
+  - `job_id: del_...`;
+  - `status: queued`;
+  - `sla: 24h`.
+- Standard response headers:
+  - `X-Request-ID`;
+  - `X-Vendor-Trace-ID`;
+  - `X-Vendor-Retrieval-Strategy`;
+  - `Server-Timing`.
+- Static `openapi.yaml` contract served as JSON at `/v1/openapi.json`.
+- Runtime OpenAPI path and response-code comparison verified against `openapi.yaml`.
+- Dockerfile with pinned Python base image digest.
 - `docker-compose.local.yml`.
 - `docker-compose.service.yml`.
-- Local tests and smoke tests.
+- Local tests and expanded smoke tests.
 
-Not active yet:
+Not active locally:
 
 - external LLM answer generation;
 - Prometheus `/metrics`;
 - OpenTelemetry;
-- official CityDock CI/deployment.
+- official CityDock CI/deployment;
+- official CityDock acceptance/evaluation suite.
 
 The default answer generation is deterministic and citation-based. No external LLM is called by default.
 
@@ -140,17 +159,27 @@ FastAPI routes
   +--> routes/ingest.py
   |      - JSON ingest
   |      - multipart ingest
+  |      - 413 oversized upload rejection
   |      - ingest job polling
   |
   +--> routes/query.py
   |      - hybrid retrieval
   |      - citation response
   |
+  +--> routes/namespaces.py
+  |      - namespace stats
+  |      - source delete
+  |      - namespace delete
+  |
+  +--> routes/openapi.py
+  |      - serves root openapi.yaml as JSON
+  |
   +--> services/
          |
          +--> ingest_service.py
          |      - idempotency
          |      - URL/file text resolution
+         |      - job status
          |      - chunking
          |      - embedding
          |      - indexing
@@ -165,6 +194,7 @@ FastAPI routes
          |      - text/markdown extraction
          |      - text/html visible text extraction
          |      - application/pdf extraction
+         |      - document size validation
          |
          +--> legal_chunker.py
          |      - Romanian legal article chunking
@@ -179,7 +209,7 @@ FastAPI routes
          |      - Qdrant collection management
          |      - vector upsert
          |      - vector search
-         |      - vector deletion
+         |      - source/namespace vector deletion
          |
          +--> retrieval_service.py
          |      - exact article boost
@@ -198,15 +228,17 @@ FastAPI routes
                 - sources
                 - chunks
                 - namespace stats
+```
 
 Local infrastructure:
-  |
-  +--> SQLite
-  |      - ./data/app.db
-  |
-  +--> Qdrant
-         - http://localhost:6333
-         - collection: rag_chunks
+
+```text
+SQLite
+  - ./data/app.db
+
+Qdrant
+  - http://localhost:6333
+  - collection: rag_chunks
 ```
 
 ---
@@ -232,6 +264,8 @@ Development/test dependencies are in:
 ```text
 requirements-dev.txt
 ```
+
+Runtime dependencies include `PyYAML`, used to serve the static `openapi.yaml` contract as JSON at `/v1/openapi.json`.
 
 ---
 
@@ -294,20 +328,6 @@ Verify Qdrant:
 ```powershell
 curl.exe http://localhost:6333/collections
 ```
-
-Expected response:
-
-```json
-{
-  "result": {
-    "collections": []
-  },
-  "status": "ok",
-  "time": 0.000014307
-}
-```
-
-If `rag_chunks` already exists, it can appear in the collections list.
 
 ### 6. Start the API
 
@@ -399,6 +419,7 @@ The test suite covers:
 - ingest;
 - URL fetcher;
 - multipart file upload;
+- oversized upload `413`;
 - document extraction;
 - idempotency;
 - ingest polling;
@@ -409,6 +430,7 @@ The test suite covers:
 - namespace stats;
 - source deletion;
 - namespace deletion;
+- static OpenAPI contract serving;
 - no-answer behavior.
 
 ---
@@ -427,10 +449,69 @@ Optional explicit arguments:
 python smoke_endpoints.py http://localhost:8080 test-api-key endpoint-test-tenant
 ```
 
+Run the expanded suite including the 50 MiB oversized upload check:
+
+```powershell
+python smoke_endpoints.py --include-large-upload
+```
+
+Probe optional endpoints such as `/metrics` and `/v1/eval`:
+
+```powershell
+python smoke_endpoints.py --include-optional
+```
+
+Save smoke output in PowerShell:
+
+```powershell
+$env:PYTHONIOENCODING="utf-8"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+python smoke_endpoints.py --include-large-upload 2>&1 | Tee-Object -FilePath smoke-output-full.txt
+```
+
 Expected final output:
 
 ```text
 ALL ENDPOINT SMOKE TESTS PASSED
+```
+
+The expanded smoke script validates:
+
+```text
+health
+static OpenAPI contract serving
+auth failures
+validation failures
+missing Idempotency-Key
+JSON ingest
+ingest polling
+unknown job
+cross-tenant job isolation
+idempotency replay
+idempotency conflict
+same idempotency key under different tenant
+unsupported MIME
+missing URL
+malformed JSON
+URL fetch failure job
+multipart upload
+multipart validation failures
+oversized upload 413
+exact article query
+semantic query
+retrieval-only mode
+top_k boundary
+uploaded-file retrieval
+no-answer behavior
+cross-tenant query isolation
+multi-namespace retrieval
+namespace stats
+missing namespace stats
+cross-tenant stats isolation
+source deletion
+namespace deletion
+post-delete verification
+optional /metrics and /v1/eval probes
 ```
 
 ---
@@ -461,6 +542,47 @@ Example headers:
 
 ---
 
+## Contract-aligned error behavior
+
+All non-2xx responses use the standard envelope:
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "Request validation failed.",
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "details": {}
+  }
+}
+```
+
+Implemented lowercase error codes include:
+
+```text
+invalid_request
+unauthorized
+not_found
+namespace_not_found
+duplicate_job
+payload_too_large
+unsupported_media_type
+validation_error
+```
+
+Examples verified by smoke tests:
+
+```text
+401 unauthorized
+409 duplicate_job
+413 payload_too_large
+415 unsupported_media_type
+422 validation_error
+404 not_found / namespace_not_found
+```
+
+---
+
 ## API examples with curl
 
 ### 1. Health
@@ -483,8 +605,6 @@ Expected response:
   }
 }
 ```
-
----
 
 ### 2. JSON ingest with inline fixture text
 
@@ -529,11 +649,7 @@ Expected response:
 
 Although the response says `queued`, the MVP processes the job synchronously and the job status should become `done`.
 
----
-
 ### 3. Poll ingest job
-
-Replace `j_...` with the returned job id:
 
 ```powershell
 curl.exe -X GET http://localhost:8080/v1/ingest/j_... `
@@ -560,8 +676,6 @@ Expected response:
   "error": null
 }
 ```
-
----
 
 ### 4. Query article 15
 
@@ -629,8 +743,6 @@ X-Vendor-Retrieval-Strategy: hybrid_qdrant_article_keyword
 Server-Timing: app;dur=...
 ```
 
----
-
 ### 5. Query empty/no-answer behavior
 
 Create `examples/query_empty.json`:
@@ -665,10 +777,6 @@ Expected response:
   "confidence": 0.0
 }
 ```
-
-The full response also includes `request_id`, `usage`, `latency_ms`, `model_version`, `retrieval_strategy`, and `trace_id`.
-
----
 
 ### 6. URL ingest
 
@@ -711,8 +819,6 @@ Expected success response:
 ```
 
 If the URL is unreachable, has unsupported MIME type, or contains no extractable text, the job is marked as `failed` when polled.
-
----
 
 ### 7. Multipart file ingest
 
@@ -760,40 +866,33 @@ Expected response:
 }
 ```
 
-Then query:
+Then query the uploaded namespace.
 
-```powershell
-curl.exe -X POST http://localhost:8080/v1/query `
-  -H "Authorization: Bearer test-api-key" `
-  -H "Content-Type: application/json" `
-  -H "X-Request-ID: 88888888-8888-4888-8888-888888888888" `
-  -H "X-Tenant-ID: ph-balta-doamnei" `
-  -d "{\"question\":\"Ce spune articolul 15?\",\"language\":\"ro\",\"namespaces\":[\"uploaded_legea_31\"],\"top_k\":5,\"hint_article_number\":\"15\",\"include_answer\":true}"
-```
+### 8. Oversized multipart upload
 
-Expected response contains:
+The API rejects uploaded files larger than 50 MiB before job creation:
 
 ```json
 {
-  "answer": "... [1].",
-  "citations": [
-    {
-      "chunk": {
-        "article_number": "15",
-        "source_title": "Uploaded Legal Text",
-        "metadata": {
-          "text_source": "uploaded_file",
-          "uploaded_filename": "legea_31.txt"
-        }
-      }
+  "error": {
+    "code": "payload_too_large",
+    "message": "Uploaded file exceeds maximum allowed size of 50 MiB.",
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "details": {
+      "max_size_bytes": 52428800,
+      "actual_size_bytes": 52428801
     }
-  ]
+  }
 }
 ```
 
----
+This is covered by:
 
-### 8. Namespace stats
+```powershell
+python smoke_endpoints.py --include-large-upload
+```
+
+### 9. Namespace stats
 
 ```powershell
 curl.exe -X GET http://localhost:8080/v1/namespaces/legea_31_1990/stats `
@@ -816,9 +915,7 @@ Expected response:
 }
 ```
 
----
-
-### 9. Delete source
+### 10. Delete source
 
 ```powershell
 curl.exe -X DELETE http://localhost:8080/v1/namespaces/legea_31_1990/sources/s_47381 `
@@ -834,19 +931,9 @@ Expected:
 HTTP/1.1 204 No Content
 ```
 
-A later query should return:
+A later query should return no answer.
 
-```json
-{
-  "answer": null,
-  "citations": [],
-  "confidence": 0.0
-}
-```
-
----
-
-### 10. Delete namespace
+### 11. Delete namespace
 
 ```powershell
 curl.exe -X DELETE http://localhost:8080/v1/namespaces/legea_31_1990 `
@@ -859,11 +946,13 @@ Expected response shape:
 
 ```json
 {
-  "job_id": "j_...",
-  "status": "done",
-  "namespace_id": "legea_31_1990"
+  "job_id": "del_...",
+  "status": "queued",
+  "sla": "24h"
 }
 ```
+
+Although local deletion is performed immediately, the response shape follows the contract's asynchronous delete acknowledgement.
 
 ---
 
@@ -875,10 +964,19 @@ The repository contains:
 openapi.yaml
 ```
 
-The running service exposes:
+The running service exposes the static contract as JSON:
 
 ```text
 GET /v1/openapi.json
+```
+
+Implementation:
+
+```text
+openapi.yaml
+→ app/routes/openapi.py
+→ PyYAML loads the static YAML contract
+→ JSONResponse returns it at /v1/openapi.json
 ```
 
 Generate a local runtime schema snapshot:
@@ -887,11 +985,30 @@ Generate a local runtime schema snapshot:
 curl.exe http://localhost:8080/v1/openapi.json -o generated-openapi.local.json
 ```
 
-This generated snapshot is a local artifact and should not normally be committed.
+Compare paths and response codes:
+
+```powershell
+python compare_openapi_paths.py
+python compare_openapi_responses.py
+```
+
+Expected after alignment:
+
+```text
+Only in generated:
+
+Only in openapi.yaml:
+
+compare_openapi_responses.py produces no output
+```
+
+The generated snapshot and comparison helper scripts are local artifacts and should not normally be committed.
 
 ---
 
 ## Docker image size note
+
+The Dockerfile uses a pinned Python base image digest for reproducible builds.
 
 The Docker image includes a local multilingual embedding runtime using `sentence-transformers` and CPU-only PyTorch.
 
@@ -977,12 +1094,13 @@ paraphrase-multilingual-MiniLM-L12-v2
 
 ### PowerShell corrupts diacritics
 
-For Unicode-safe endpoint tests, prefer:
+For Unicode-safe endpoint tests:
 
 ```powershell
-python smoke_endpoints.py
+$env:PYTHONIOENCODING="utf-8"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+python smoke_endpoints.py --include-large-upload 2>&1 | Tee-Object -FilePath smoke-output-full.txt
 ```
 
-over long inline PowerShell JSON strings.
-
 ---
+
