@@ -81,7 +81,7 @@ def test_ingest_multipart_requires_payload(client, auth_headers):
     )
 
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert response.json()["error"]["code"] == "validation_error"
 
 
 def test_ingest_multipart_requires_file(client, auth_headers):
@@ -109,4 +109,4 @@ def test_ingest_multipart_requires_file(client, auth_headers):
     )
 
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert response.json()["error"]["code"] == "validation_error"

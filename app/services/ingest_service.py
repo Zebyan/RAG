@@ -237,7 +237,7 @@ def get_ingest_job_status(
     if not job:
         raise_error(
             404,
-            "NOT_FOUND",
+            "not_found",
             f"Ingest job not found: {job_id}",
             request_id=request_id,
         )
@@ -380,7 +380,7 @@ def _process_ingest_synchronously(
                 },
                 "completed_at": completed_at,
                 "error": {
-                    "code": "INGEST_FAILED",
+                    "code": "ingest_failed",
                     "message": str(exc),
                 },
             }

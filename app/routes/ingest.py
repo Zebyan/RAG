@@ -33,7 +33,7 @@ async def _parse_ingest_request(
         if payload_raw is None:
             raise_error(
                 status_code=422,
-                code="VALIDATION_ERROR",
+                code="validation_error",
                 message="Multipart field 'payload' is required.",
                 request_id=request_id,
                 details={"errors": [{"loc": ["body", "payload"], "msg": "Field required"}]},
@@ -42,7 +42,7 @@ async def _parse_ingest_request(
         if uploaded_file is None:
             raise_error(
                 status_code=422,
-                code="VALIDATION_ERROR",
+                code="validation_error",
                 message="Multipart field 'file' is required.",
                 request_id=request_id,
                 details={"errors": [{"loc": ["body", "file"], "msg": "Field required"}]},
@@ -53,7 +53,7 @@ async def _parse_ingest_request(
         except json.JSONDecodeError as exc:
             raise_error(
                 status_code=422,
-                code="VALIDATION_ERROR",
+                code="validation_error",
                 message="Invalid multipart payload.",
                 request_id=request_id,
                 details={"errors": [{"loc": ["body", "payload"], "msg": str(exc)}]},
@@ -64,7 +64,7 @@ async def _parse_ingest_request(
         except ValidationError as exc:
             raise_error(
                 status_code=422,
-                code="VALIDATION_ERROR",
+                code="validation_error",
                 message="Invalid multipart payload.",
                 request_id=request_id,
                 details={"errors": exc.errors()},
@@ -94,7 +94,7 @@ async def _parse_ingest_request(
     except json.JSONDecodeError as exc:
         raise_error(
             status_code=422,
-            code="VALIDATION_ERROR",
+            code="validation_error",
             message="Invalid JSON payload.",
             request_id=request_id,
             details={"errors": [{"loc": ["body"], "msg": str(exc)}]},
@@ -105,7 +105,7 @@ async def _parse_ingest_request(
     except ValidationError as exc:
         raise_error(
             status_code=422,
-            code="VALIDATION_ERROR",
+            code="validation_error",
             message="Invalid JSON payload.",
             request_id=request_id,
             details={"errors": exc.errors()},

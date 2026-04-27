@@ -123,8 +123,8 @@ class IngestJobStatus(BaseModel):
 
 class DeleteNamespaceResponse(BaseModel):
     job_id: str
-    status: str = "queued"
-    sla: str = "24h"
+    status: str 
+    sla: str
 
 
 class NamespaceStats(BaseModel):

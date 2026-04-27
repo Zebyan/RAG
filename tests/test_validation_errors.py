@@ -16,7 +16,7 @@ def test_query_validation_error_uses_standard_error_response(client, auth_header
     data = response.json()
 
     assert "error" in data
-    assert data["error"]["code"] == "VALIDATION_ERROR"
+    assert data["error"]["code"] == "validation_error"
     assert data["error"]["message"] == "Request validation failed."
     assert data["error"]["request_id"] == auth_headers["X-Request-ID"]
     assert "details" in data["error"]
@@ -53,7 +53,7 @@ def test_ingest_validation_error_uses_standard_error_response(client, auth_heade
     data = response.json()
 
     assert "error" in data
-    assert data["error"]["code"] == "VALIDATION_ERROR"
+    assert data["error"]["code"] == "validation_error"
     assert data["error"]["request_id"] == auth_headers["X-Request-ID"]
 
     errors = data["error"]["details"]["errors"]

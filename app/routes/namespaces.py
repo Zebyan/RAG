@@ -35,10 +35,17 @@ async def delete_source(
     return None
 
 
-@router.delete("/namespaces/{namespace_id}", response_model=DeleteNamespaceResponse, status_code=202)
-async def delete_namespace(namespace_id: str, auth: AuthContext = Depends(verify_auth)) -> DeleteNamespaceResponse:
+@router.delete(
+    "/namespaces/{namespace_id}",
+    response_model=DeleteNamespaceResponse,
+    status_code=202,
+)
+async def delete_namespace_route(
+    namespace_id: str,
+    auth: AuthContext = Depends(verify_auth),
+) -> DeleteNamespaceResponse:
     return delete_namespace_data(
         tenant_id=auth.tenant_id,
-        request_id=auth.request_id,
         namespace_id=namespace_id,
+        request_id=auth.request_id,
     )
