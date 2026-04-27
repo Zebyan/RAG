@@ -10,6 +10,7 @@ from app.auth import AuthContext, verify_auth
 from app.errors import raise_error
 from app.models import IngestAcceptedResponse, IngestJobStatus, IngestRequest
 from app.services.ingest_service import create_ingest_job, get_ingest_job_status
+from app.services.document_extractor import MAX_DOCUMENT_BYTES
 
 router = APIRouter()
 
@@ -71,6 +72,17 @@ async def _parse_ingest_request(
             )
 
         file_content = await uploaded_file.read()
+        if len(file_content) > MAX_DOCUMENT_BYTES:
+            raise_error(
+                status_code=413,
+                code="payload_too_large",
+                message="Uploaded file exceeds maximum allowed size of 50 MiB.",
+                request_id=request_id,
+                details={
+                    "max_size_bytes": MAX_DOCUMENT_BYTES,
+                    "actual_size_bytes": len(file_content),
+                },
+            )
         file_mime_type = uploaded_file.content_type
         filename = uploaded_file.filename
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
+from app.services.document_extractor import MAX_DOCUMENT_BYTES
+
 
 def test_ingest_multipart_text_file(client, auth_headers):
     namespace_id = f"file_upload_namespace_{uuid4().hex}"
@@ -110,3 +112,41 @@ def test_ingest_multipart_requires_file(client, auth_headers):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+def test_ingest_multipart_large_file_returns_413(client, auth_headers):
+    ingest_headers = {
+        **auth_headers,
+        "Idempotency-Key": str(uuid4()),
+    }
+
+    payload = {
+        "namespace_id": f"large_file_namespace_{uuid4().hex}",
+        "source_id": f"s_large_file_{uuid4().hex}",
+        "source_type": "file",
+        "mime_type_hint": "text/plain",
+        "metadata": {
+            "source_title": "Large File"
+        },
+    }
+
+    oversized_content = b"x" * (MAX_DOCUMENT_BYTES + 1)
+
+    response = client.post(
+        "/v1/ingest",
+        headers=ingest_headers,
+        data={
+            "payload": json.dumps(payload),
+        },
+        files={
+            "file": ("large.txt", oversized_content, "text/plain"),
+        },
+    )
+
+    assert response.status_code == 413
+
+    data = response.json()
+
+    assert data["error"]["code"] == "payload_too_large"
+    assert data["error"]["request_id"] == auth_headers["X-Request-ID"]
+    assert data["error"]["details"]["max_size_bytes"] == MAX_DOCUMENT_BYTES
+    assert data["error"]["details"]["actual_size_bytes"] == MAX_DOCUMENT_BYTES + 1

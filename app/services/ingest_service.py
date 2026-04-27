@@ -15,7 +15,11 @@ from app.services.legal_chunker import chunk_legal_text
 from app.services.embedding_service import embed_texts
 from app.services import vector_store
 from app.services.url_fetcher import UrlFetchError, fetch_url_document
-from app.services.document_extractor import DocumentExtractionError, extract_document_text
+from app.services.document_extractor import (
+    DocumentExtractionError,
+    DocumentTooLargeError,
+    extract_document_text,
+)
 
 ALLOWED_MIME_TYPES = {"text/html", "application/pdf", "text/plain", "text/markdown"}
 

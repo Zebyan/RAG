@@ -21,6 +21,8 @@ SUPPORTED_MIME_TYPES = {
 class DocumentExtractionError(ValueError):
     pass
 
+class DocumentTooLargeError(DocumentExtractionError):
+    pass
 
 @dataclass
 class ExtractedDocument:
@@ -38,7 +40,7 @@ def normalize_mime_type(mime_type: str | None) -> str:
 
 def validate_document_size(content: bytes) -> None:
     if len(content) > MAX_DOCUMENT_BYTES:
-        raise DocumentExtractionError("Document exceeds maximum allowed size of 50 MiB.")
+        raise DocumentTooLargeError("Document exceeds maximum allowed size of 50 MiB.")
 
 
 def validate_mime_type(mime_type: str) -> None:
