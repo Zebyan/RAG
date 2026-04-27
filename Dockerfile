@@ -1,13 +1,13 @@
-FROM python:3.12-slim AS builder
+ARG PYTHON_BASE_IMAGE=python:3.12-slim@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3
+
+FROM ${PYTHON_BASE_IMAGE} AS builder
 
 WORKDIR /build
 
 COPY requirements.txt .
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
-RUN pip install --upgrade pip \
-    && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
-
-FROM python:3.12-slim AS runtime
+FROM ${PYTHON_BASE_IMAGE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -18,10 +18,7 @@ RUN groupadd -g 1000 appuser \
     && useradd -u 1000 -g appuser -m appuser
 
 COPY --from=builder /wheels /wheels
-
-RUN pip install --no-cache-dir /wheels/* \
-    && pip cache purge \
-    && rm -rf /wheels
+RUN pip install --no-cache-dir /wheels/*
 
 COPY app ./app
 COPY openapi.yaml ./openapi.yaml
